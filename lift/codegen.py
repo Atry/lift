@@ -161,10 +161,12 @@ def get_schedule_map(ctx):
         .union(init_map.apply_range(update_map.reverse()))
         .union(update_map.apply_range(def_map.reverse())))
 
+    coincidence = validity.union(update_map.apply_range(update_map.reverse()))
+
     constraints = (
         isl.ScheduleConstraints.on_domain(domain)
         .set_validity(validity)
-        .set_coincidence(validity)
+        .set_coincidence(coincidence)
         .set_proximity(validity)
     )
     schedule = constraints.compute_schedule()

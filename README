@@ -1,0 +1,8 @@
+LIsp-Flavoured Tensor
+
+further development after the tutorial
+
+to generate OpenCL code
+
+python -m lift func_name /path/to/filename.model > filename.c
+ppcg -v --no-reschedule --target=opencl filename.c

@@ -3,7 +3,7 @@ from .check import check_stmts
 from .compile import compile
 from .contract import contract_arrays
 from .codegen import codegen
-from .asmjs_formatter import format_asmjs
+from .c_formatter import format_c
 
 import sys
 
@@ -21,6 +21,13 @@ for filename in sys.argv[2:]:
 table = check_stmts(stmts)
 context = compile(table)
 contract_arrays(context)
-context.isl_context.set_schedule_serialize_sccs(1)
+
+# context.isl_context.set_schedule_serialize_sccs(1)
+context.isl_context.set_ast_build_detect_min_max(1)
+context.isl_context.set_schedule_maximize_band_depth(1)
+context.isl_context.set_schedule_maximize_coincidence(1)
+context.isl_context.set_schedule_whole_component(0)
+context.isl_context.set_schedule_separate_components(1)
+
 ast = codegen(context)
-print format_asmjs(name, table, context, ast)
+print format_c(name, table, context, ast)
