@@ -65,7 +65,8 @@ void
 #pragma scop
 {body}
 #pragma endscop
-}}"""
+}}
+"""
 
 def format_c(name, table, ctx, ast):
 
@@ -193,10 +194,12 @@ def format_ast(table, ast):
         shape = table.vars[ast[1][1]].shape
         if len(shape) == 0:
             assert len(ast[1][2]) == 0
-            return "{} = {};\n".format(
+            return "{}: {} = {};\n".format(
+                ast[3],
                 ast[1][1],
                 format_ast(table, ast[2]))
-        return "{} = {};\n".format(
+        return "{}: {} = {};\n".format(
+            ast[3],
             format_element(ast[1][1], ast[1][2]),
             format_ast(table, ast[2]))
     elif ast[0] == 'call':

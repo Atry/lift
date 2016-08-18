@@ -2,7 +2,17 @@ LIsp-Flavoured Tensor
 
 further development after the tutorial
 
-to generate OpenCL code
+to generate OpenCL code for conv.model
 
-python -m lift func_name /path/to/filename.model > filename.c
-ppcg -v --no-reschedule --target=opencl filename.c
+  # generate conv.c and conv.yaml (schedule)
+  python -m lift conv func conv.model
+
+  # generate conv_host.c and conv_kernel.cl
+  ppcg -v --no-reschedule --load-schedule=conv.yaml --target=opencl conv.c
+
+Requirements:
+
+* Python 2.7
+* ply (https://pypi.python.org/pypi/ply)
+* islpy (https://pypi.python.org/pypi/islpy)
+* ppcg (http://ppcg.gforge.inria.fr/)

@@ -114,7 +114,7 @@ def convert_stmt(ctx, expr):
         raise NotImplementedError
 
     return ("assign", transform_var(stmt[0], args),
-            transform_expr(stmt[1], args))
+            transform_expr(stmt[1], args), name)
 
 
 def build_ast(ctx, node):
@@ -145,7 +145,7 @@ def build_ast(ctx, node):
         raise NotImplementedError
 
 
-def get_schedule_map(ctx):
+def get_schedule_constraints(ctx):
     def_map = ctx.def_stmts.get_assign_map().union(ctx.fini_stmts.get_assign_map())
     init_map = ctx.init_stmts.get_assign_map()
     update_map = ctx.update_stmts.get_assign_map()
@@ -169,11 +169,16 @@ def get_schedule_map(ctx):
         .set_coincidence(coincidence)
         .set_proximity(validity)
     )
+
+    return constraints
+
+
+def get_schedule_map(constraints):
     schedule = constraints.compute_schedule()
-    return schedule.get_map().intersect_domain(domain)
+    return schedule.get_map().intersect_domain(schedule.get_domain())
 
 
-def codegen(ctx):
-    schedule_map = get_schedule_map(ctx)
+def codegen(ctx, constraints):
+    schedule_map = get_schedule_map(constraints)
     node = isl.AstBuild.alloc(ctx.isl_context).ast_from_schedule(schedule_map)
     return build_ast(ctx, node)
