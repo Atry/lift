@@ -274,7 +274,7 @@ class Reduce(object):
         n, = n.body
         self.n = int(n.n)
         assert self.n >= 1
-        op = table.get_symbol(name.s)
+        op = table.symbols[name.s]
         assert op.rank == (0,0)
         assert op.get_shape((),()) == ()
         self.op = op
@@ -465,7 +465,7 @@ class Oblique(object):
         n, = n.body
         self.n = int(n.n)
         assert self.n >= 1
-        op = table.get_symbol(name.s)
+        op = table.symbols[name.s]
         assert op.rank == (0,0)
         assert op.get_shape((),()) == ()
         self.op = op

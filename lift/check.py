@@ -56,10 +56,10 @@ def check_monad(table, args, op, y):
         return (z[0], merge_shape(z[1]))
     elif isinstance(op, ast.Exprs):
         assert isinstance(op.body[0], ast.Name)
-        monad = table.get_symbol(op.body[0].s)(table, op.body[1:])
+        monad = table.symbols[op.body[0].s](table, op.body[1:])
 
     elif isinstance(op, ast.Name):
-        monad = table.get_symbol(op.s)
+        monad = table.symbols[op.s]
     else:
         raise NotImplementedError
 
@@ -70,7 +70,7 @@ def check_monad(table, args, op, y):
         return (z[0],merge_shape(z[1]))
 
     shape = (monad.get_shape(sy[0]),) + sy[1:]
-    v = table.add_var(
+    v = table.vars.add(
         symbol.ApplyMonad(
             op.position,
             shape = sum(shape,()),
@@ -90,10 +90,10 @@ def check_dyad(table, args, op, x, y):
 
     elif isinstance(op, ast.Exprs):
         assert isinstance(op.body[0], ast.Name)
-        dyad = table.get_symbol(op.body[0].s)(table, op.body[1:])
+        dyad = table.symbols[op.body[0].s](table, op.body[1:])
 
     elif isinstance(op, ast.Name):
-        dyad = table.get_symbol(op.s)
+        dyad = table.symbols[op.s]
     else:
         raise NotImplementedError
 
@@ -105,7 +105,7 @@ def check_dyad(table, args, op, x, y):
         return (z[0],merge_shape(z[1]))
 
     shape = (dyad.get_shape(sx[0], sy[0]),) + sz
-    v = table.add_var(
+    v = table.vars.add(
         symbol.ApplyDyad(
             op.position,
             shape = sum(shape,()),
@@ -118,14 +118,14 @@ def check_dyad(table, args, op, x, y):
 
 def check_expr(table, args, expr):
     if isinstance(expr, ast.Name):
-        v = table.get_symbol(expr.s)
+        v = table.symbols[expr.s]
         shape = table.vars[v].shape
         return (v, (shape,))
     elif isinstance(expr, ast.Arg):
         return args[expr.s]
     elif isinstance(expr, ast.Numbers):
         shape = () if len(expr.body) == 1 else (len(expr,body),)
-        v = table.add_var(
+        v = table.vars.add(
             symbol.Literal(
                 expr.position,
                 shape = shape,
@@ -147,28 +147,25 @@ def check_expr(table, args, expr):
     raise NotImplementedError
 
 
-def check_arg(table, type, stmt):
-    length = len(stmt.value.body)
-
-    if length == 1:
-        shape = ()
-    elif length == 2:
-        shape = transform_integers(stmt.value.body[1])[::-1]
+def check_arg_shape(body):
+    if len(body) == 1:
+        return ()
+    elif len(body) == 2:
+        return transform_integers(body[1])[::-1]
     else:
         raise NotImplementedError
 
-    table.add_declaration(
-        stmt.name,
-        symbol.Argument(
-            stmt.position,
-            type=type,
-            shape=shape))
-
 def check_arg_in(table, stmt):
-    check_arg(table, "in", stmt)
+    shape = check_arg_shape(stmt.value.body)
+
+    table.symbols[stmt.name] = table.vars.add(
+        symbol.Input(stmt.position, shape=shape))
+
+    table.inputs[stmt.name] = table.symbols[stmt.name]
 
 def check_arg_out(table, stmt):
-    check_arg(table, "out", stmt)
+    table.outputs[stmt.name] = symbol.Output(
+        stmt.position, shape=check_arg_shape(stmt.value.body))
 
 def check_grad(table, stmt):
     assert len(stmt.value.body) == 3
@@ -176,7 +173,8 @@ def check_grad(table, stmt):
     assert isinstance(stmt.value.body[2], ast.Name)
 
     v, w = stmt.value.body[1].s, stmt.value.body[2].s
-    table.add_symbol(stmt.name, table.get_grad(table.get_symbol(v), table.get_symbol(w)))
+    table.symbols[stmt.name] = table.get_grad(
+        table.symbols[v], table.symbols[w])
 
 
 DECLARES = {
@@ -194,25 +192,21 @@ def check_stmt(table, stmt):
 
     elif isinstance(stmt, ast.Assign):
         v, (shape,) = check_expr(table, {}, stmt.value)
-        table.add_symbol(stmt.name, v)
+        table.symbols[stmt.name] = v
 
     elif isinstance(stmt, ast.Op):
         rank = transform_ranks(stmt.rank)
 
         if len(rank) == 1:
-            table.add_symbol(
-                stmt.name,
-                symbol.Monad(
-                    stmt.position,
-                    rank = rank[0],
-                    expr = stmt.value))
+            table.symbols[stmt.name] = symbol.Monad(
+                stmt.position,
+                rank = rank[0],
+                expr = stmt.value)
         elif len(rank) == 2:
-            table.add_symbol(
-                stmt.name,
-                symbol.Dyad(
-                    stmt.position,
-                    rank = rank,
-                    expr = stmt.value))
+            table.symbols[stmt.name] = symbol.Dyad(
+                stmt.position,
+                rank = rank,
+                expr = stmt.value)
         else:
             assert False, "rank of op must be either 1 or 2"
 
@@ -226,5 +220,7 @@ def check_stmts(stmts):
     for stmt in stmts:
         check_stmt(table, stmt)
 
-    assert all(name in table.symbols for name in table.declarations)
+    for k, v in table.outputs.iteritems():
+        assert table.vars[table.symbols[k]].shape == v.shape
+
     return table

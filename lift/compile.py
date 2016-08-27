@@ -1,5 +1,6 @@
 import islpy as isl
 from . import symbol
+from .utils import Counter
 
 
 class Arrays(dict):
@@ -76,7 +77,7 @@ class Statements(dict):
         self.ctx = ctx
 
     def add(self, stmt):
-        name = self.ctx.new_stmt_name()
+        name = self.ctx.stmt_name.next()
         self[name] = rename_stmt(stmt, name)
 
     def subtract(self, domain):
@@ -102,56 +103,22 @@ class Statements(dict):
         return umap
 
 
-class lazy_property(object):
-
-    def __init__(self, fun):
-        self.fun = fun
-
-    def __get__(self, instance, owner):
-        o = self.fun(instance)
-        instance.__dict__[self.fun.__name__] = o
-        return o
-
-
 class Context(object):
-
-    @lazy_property
-    def input_arrays(self):
-        return Arrays(self)
-
-    @lazy_property
-    def output_arrays(self):
-        return Arrays(self)
-
-    @lazy_property
-    def intermediate_arrays(self):
-        return Arrays(self)
-
-    @lazy_property
-    def const_arrays(self):
-        return Arrays(self)
-
-    @lazy_property
-    def def_stmts(self):
-        return Statements(self)
-
-    @lazy_property
-    def init_stmts(self):
-        return Statements(self)
-
-    @lazy_property
-    def update_stmts(self):
-        return Statements(self)
-
-    @lazy_property
-    def fini_stmts(self):
-        return Statements(self)
 
 
     def __init__(self):
         self.isl_context = isl.Context.alloc()
-        self.next_stmt_id = 0
+        self.stmt_name = Counter("S")
         self.const_values = {}
+
+        self.input_arrays = Arrays(self)
+        self.output_arrays = Arrays(self)
+        self.intermediate_arrays = Arrays(self)
+        self.const_arrays = Arrays(self)
+        self.def_stmts = Statements(self)
+        self.init_stmts = Statements(self)
+        self.update_stmts = Statements(self)
+        self.fini_stmts = Statements(self)
 
 
     def new_element_access(self, name):
@@ -205,11 +172,6 @@ class Context(object):
                 .set_coefficient_val(
                     isl.dim_type.out, n_out, isl.Val.int_from_si(self.isl_context, 1))))
 
-
-    def new_stmt_name(self):
-        name = "S"+str(self.next_stmt_id)
-        self.next_stmt_id += 1
-        return name
 
     def get_use_map(self):
         return self.def_stmts.get_use_map().union(self.update_stmts.get_use_map().subtract(self.update_stmts.get_assign_map()))
@@ -469,21 +431,20 @@ def add_acc_fini(ctx, name, shape):
 def compile(table):
     ctx = Context()
 
-    for k, d in table.declarations.items():
+    for k in table.inputs:
         name = table.symbols[k]
         v = table.vars[name]
+        ctx.output_arrays.add(name, v.shape[::-1])
 
-        if d.type == "in":
-            ctx.input_arrays.add(name, v.shape[::-1])
-        elif d.type == "out":
-            ctx.output_arrays.add(name, v.shape[::-1])
-        else:
-            raise NotImplementedError
+    for k in table.outputs:
+        name = table.symbols[k]
+        v = table.vars[name]
+        ctx.output_arrays.add(name, v.shape[::-1])
 
-    for name in table.itervars():
+    for name in table.vars:
         v = table.vars[name]
 
-        if isinstance(v, symbol.Argument):
+        if isinstance(v, symbol.Input):
             continue
 
         if isinstance(v, symbol.Literal):

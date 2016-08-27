@@ -184,7 +184,7 @@ def format_asmjs(name, table, ctx, ast):
         iterators = "".join(format_iterators(iterators)),
         size = roundup(size * 4),
         body = format_ast(shapes, offsets, ast),
-        arrays = "".join(format_arrays(offsets, shapes, {k:v for k,v in table.symbols.items() if k in table.declarations})))
+        arrays = "".join(format_arrays(offsets, shapes, {k:v for k,v in table.symbols.items() if k in table.inputs or k in table.outputs})))
 
 
 INT_FUN_TYPE = {
