@@ -1,15 +1,5 @@
 import islpy as isl
-
-def to_sets(union_set):
-    sets = []
-    union_set.foreach_set(lambda x: sets.append(x))
-    return sets
-
-
-def to_maps(union_map):
-    maps = []
-    union_map.foreach_map(lambda x: maps.append(x))
-    return maps
+from .isl_utils import to_sets, to_maps
 
 
 def rewrite_stmt(expr, stmt_map):

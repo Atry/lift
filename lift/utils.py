@@ -7,15 +7,15 @@ def product(l):
 
 class Counter(object):
 
-    def __init__(self, prefix):
-        self.prefix = prefix
+    def __init__(self, fmt):
+        self.fmt = fmt
         self.next_id = 0
 
     def next(self):
-        name = self.prefix + str(self.next_id)
+        name = self.fmt % (self.next_id,)
         self.next_id += 1
         return name
 
     def __iter__(self):
         for i in xrange(self.next_id):
-            yield self.prefix + str(i)
+            yield self.fmt % (i,)

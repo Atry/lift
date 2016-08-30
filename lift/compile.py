@@ -108,7 +108,7 @@ class Context(object):
 
     def __init__(self):
         self.isl_context = isl.Context.alloc()
-        self.stmt_name = Counter("S")
+        self.stmt_name = Counter("S%d")
         self.const_values = {}
 
         self.input_arrays = Arrays(self)

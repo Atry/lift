@@ -46,7 +46,7 @@ class AccDyad(Symbol):
 class Vars(object):
 
     def __init__(self):
-        self.counter = Counter("v")
+        self.counter = Counter("v%d")
         self.data = {}
 
     def add(self, value):

@@ -14,14 +14,14 @@ def format_arguments(table, ctx):
         + ctx.output_arrays.keys())
 
     for v in vars:
-        yield "    float %s%s"%(v, "".join("[%d]"%(s,) for s in table.vars[v].shape[::-1]))
+        yield "float %s%s"%(v, "".join("[%d]"%(s,) for s in table.vars[v].shape[::-1]))
 
 def format_scalar_consts(table, ctx):
     for k,v in ctx.const_values.items():
         if len(table.vars[k].shape) != 0:
             continue
 
-        yield "  float %s=%s;\n" % (k, v[0])
+        yield "float %s=%s;\n" % (k, v[0])
 
 
 def format_scalar_vars(table, ctx):
@@ -29,7 +29,7 @@ def format_scalar_vars(table, ctx):
         if len(table.vars[k].shape) != 0:
             continue
 
-        yield "  float %s;\n" % (k,)
+        yield "float %s;\n" % (k,)
 
 
 def format_consts(table, ctx):
@@ -38,7 +38,7 @@ def format_consts(table, ctx):
         if len(shape) == 0:
             continue
 
-        yield "  float %s%s={%s};\n" % (
+        yield "float %s%s={%s};\n" % (
             k,
             "".join("[%d]"%(s,) for s in shape),
             ",".join("%f"%(x,) for x in v))
@@ -50,7 +50,7 @@ def format_vars(table,ctx):
         if len(shape) == 0:
             continue
 
-        yield "  float %s%s;\n"%(k,"".join("[%d]"%(s,) for s in shape))
+        yield "float %s%s;\n"%(k,"".join("[%d]"%(s,) for s in shape))
 
 
 C_TEMPLATE = """#include <math.h>
@@ -92,7 +92,7 @@ INT_FUN_TYPE = {
     '||': 'infix',
     '+': 'infix',
     '-': 'infix',
-    '*': 'fun2',
+    '*': 'infix',
     '/': 'infix',
     '_': "prefix",
     '%': 'infix',
@@ -170,38 +170,36 @@ def format_call(table, fun, args):
     raise NotImplementedError
 
 
-def format_ast(table, ast):
+def format_ast(table, ast, format_kernel=None):
     if isinstance(ast, list):
-        return "".join(format_ast(table, node) for node in ast)
+        return "".join(format_ast(table, node, format_kernel) for node in ast)
     if ast[0] == 'for':
         return "for(int {v} = {init}; {cond}; {v} = {v} + {inc}){{\n{body}}}\n".format(
             v = format_int_expr(ast[1]),
             init = format_int_expr(ast[2]),
             inc = format_int_expr(ast[3]),
             cond = format_int_expr(ast[4]),
-            body = format_ast(table, ast[5]))
+            body = format_ast(table, ast[5], format_kernel))
     elif ast[0] == 'if':
         return "if({cond}){{\n{then}}}\n".format(
             cond = format_int_expr(ast[1]),
-            then = format_ast(table, ast[2]))
+            then = format_ast(table, ast[2], format_kernel))
     elif ast[0] == 'ifelse':
         return "if({cond}){{\n{then}}}\nelse{{\n{else_}}}".format(
             cond = format_int_expr(ast[1]),
-            then = format_ast(table, ast[2]),
-            else_ = format_ast(table, ast[3]))
+            then = format_ast(table, ast[2], format_kernel),
+            else_ = format_ast(table, ast[3], format_kernel))
     elif ast[0] == 'assign':
         assert ast[1][0] == 'element'
         shape = table.vars[ast[1][1]].shape
         if len(shape) == 0:
             assert len(ast[1][2]) == 0
-            return "{}: {} = {};\n".format(
-                ast[3],
+            return "{} = {};\n".format(
                 ast[1][1],
-                format_ast(table, ast[2]))
-        return "{}: {} = {};\n".format(
-            ast[3],
+                format_ast(table, ast[2], format_kernel))
+        return "{} = {};\n".format(
             format_element(ast[1][1], ast[1][2]),
-            format_ast(table, ast[2]))
+            format_ast(table, ast[2], format_kernel))
     elif ast[0] == 'call':
         return format_call(table, ast[1], ast[2])
     elif ast[0] == 'element':
@@ -215,5 +213,8 @@ def format_ast(table, ast):
         return "%f"%(ast[1],)
     elif ast[0] == 'var':
         return ast[1]
+    elif ast[0] == 'kernel':
+        assert format_kernel is not None
+        return format_kernel(ast[1])
     else:
         raise NotImplementedError
