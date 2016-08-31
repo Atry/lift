@@ -434,7 +434,7 @@ def compile(table):
     for k in table.inputs:
         name = table.symbols[k]
         v = table.vars[name]
-        ctx.output_arrays.add(name, v.shape[::-1])
+        ctx.input_arrays.add(name, v.shape[::-1])
 
     for k in table.outputs:
         name = table.symbols[k]

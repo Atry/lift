@@ -115,6 +115,139 @@ def transform_stmt(stmt, iterator_map, build):
             transform_expr(stmt[1], iterator_map, build))
 
 
+class ArrayInfo(object):
+
+    def __init__(self, has_cpu_buffer, gpu_up_to_date):
+        self.has_cpu_buffer = has_cpu_buffer
+        self.has_gpu_buffer = False
+        self.cpu_up_to_date = True
+        self.gpu_up_to_date = gpu_up_to_date
+        self.last_gpu_write = None
+        self.last_gpu_access = None
+
+class ArrayState(object):
+
+    def __init__(self, ctx, assign_map, use_map, arrays, domains, kernels):
+        self.ctx = ctx
+        self.assign_map = assign_map
+        self.use_map = use_map
+        self.arrays = arrays
+        self.domains = domains
+        self.kernels = kernels
+        self.last_kernel = None
+        self.acc = isl.UnionSet("{ }", ctx.isl_context)
+
+    def on_domain(self, name):
+        self.acc = self.acc.union(domains[name])
+
+    def cpu_access(self, v, write=False):
+        array = self.arrays[v]
+        array.has_cpu_buffer = True
+
+        if not array.cpu_up_to_date:
+            self.kernels[array.last_gpu_write].copy_outs.add(v)
+            array.cpu_up_to_date = True
+
+        if write:
+            array.gpu_up_to_date = False
+
+    def gpu_acccess(self, v, kernel_id, write=False):
+        kernel = self.kernels[kernel_id]
+        array = self.arrays[v]
+
+        if not array.has_gpu_buffer:
+            kernel.creates.add(v)
+            array.has_gpu_buffer = True
+
+        if not array.gpu_up_to_date:
+            kernel.copy_ins.add(v)
+            array.gpu_up_to_date = True
+
+        array.last_gpu_access = kernel_id
+
+        if write:
+            array.last_gpu_write = kernel_id
+            array.cpu_up_to_date = False
+
+
+    def on_kernel(self, kernel_id):
+        last_kernel = self.last_kernel
+        self.last_kernel = kernel_id
+
+        if not self.acc.is_empty():
+            if last_kernel is not None:
+                self.kernels[last_kernel].finish = True
+
+            domain = self.acc
+            self.acc = isl.UnionSet("{ }", self.ctx.isl_context)
+
+            writes = assign_map.intersect_domain(domain).range()
+            writes = list({ s.get_tuple_name() for s in to_sets(writes) })
+            reads = use_map.intersect_domain(domain).range()
+            reads = list({ s.get_tuple_name() for s in to_sets(reads) })
+
+            for v in reads:
+                self.cpu_access(v, write=False)
+
+            for v in writes:
+                self.cpu_access(v, write=True)
+
+        kernel = self.kernels[kernel_id]
+
+        for v in kernel.reads:
+            self.gpu_acccess(v, kernel_id, write=False)
+
+        for v in kernel.writes:
+            self.gpu_acccess(v, kernel_id, write=True)
+
+
+def accumulate_domain(state, node):
+    if node.get_type() == isl.ast_node_type.block:
+        for c in to_list(node.block_get_children()):
+            accumulate_domain(state, c)
+    elif node.get_type() == isl.ast_node_type.for_:
+        accumulate_domain(state, node.for_get_body())
+    elif node.get_type() == isl.ast_node_type.if_:
+        accumulate_domain(state, node.if_get_then())
+        if node.if_has_else():
+            accumulate_domain(state, node.if_get_else())
+    elif node.get_type() == isl.ast_node_type.user:
+        name = node.user_get_expr().get_id().get_name()
+        match = re.match(r'kernel\[(\d+)\]', name)
+        assert match is None
+
+        state.on_domain(name)
+    elif node.get_type() == isl.ast_node_type.mark:
+        accumulate_domain(state, node.mark_get_node())
+    else:
+        raise NotImplementedError
+
+
+def collect_array_info(state, node):
+    if node.get_type() == isl.ast_node_type.block:
+        for c in to_list(node.block_get_children()):
+            collect_array_info(state, c)
+    elif node.get_type() == isl.ast_node_type.for_:
+        accumulate_domain(state, node.for_get_body())
+    elif node.get_type() == isl.ast_node_type.if_:
+        accumulate_domain(state, node.if_get_then())
+        if node.if_has_else():
+            accumulate_domain(state, node.if_get_else())
+    elif node.get_type() == isl.ast_node_type.user:
+        name = node.user_get_expr().get_id().get_name()
+        match = re.match(r'kernel\[(\d+)\]', name)
+        if match is None:
+            accumulate_domain(state, node)
+        else:
+            kernel_id = int(match.group(1))
+            state.on_kernel(kernel_id)
+    elif node.get_type() == isl.ast_node_type.mark:
+        collect_array_info(state, node.mark_get_node())
+    else:
+        raise NotImplementedError
+
+
+
 def codegen(ctx, schedule, kernels=None):
     names = Counter("E%d")
     stmts = {}
@@ -159,18 +292,66 @@ def codegen(ctx, schedule, kernels=None):
     node = build.node_from_schedule(schedule)
 
     if kernels is not None:
-        access_map = (
+        assign_map = (
             ctx.init_stmts.get_assign_map()
             .union(ctx.fini_stmts.get_assign_map())
             .union(ctx.update_stmts.get_assign_map())
             .union(ctx.def_stmts.get_assign_map())
-            .union(ctx.get_use_map())
         )
+
+        use_map = ctx.get_use_map()
 
         for kernel in kernels.itervalues():
             kernel.ast = build_ast(stmts, kernel.ast)
-            kernel.arrays = list({ s.get_tuple_name()
-                                   for s in to_sets(access_map.intersect_domain(kernel.domain).range()) })
+            writes = assign_map.intersect_domain(kernel.domain).range()
+            reads = use_map.intersect_domain(kernel.domain).range()
+            accesses = writes.union(reads)
+            kernel.reads = list({ s.get_tuple_name() for s in to_sets(reads) })
+            kernel.writes = list({ s.get_tuple_name() for s in to_sets(writes) })
+            kernel.arrays = list({ s.get_tuple_name() for s in to_sets(accesses) })
+            kernel.finish = False
+
+
+            # create buffer
+            kernel.creates = set()
+            # copy to gpu
+            kernel.copy_ins = set()
+            # copy from gpu
+            kernel.copy_outs = set()
+            # release buffer
+            kernel.releases = set()
+
+
+        # XXX: we assume no conditional kernel here
+        arrays = {}
+
+        assert not ctx.const_arrays
+
+        for v in ctx.input_arrays:
+            arrays[v] = ArrayInfo(has_cpu_buffer=True, gpu_up_to_date=False)
+
+        for v in ctx.output_arrays:
+            arrays[v] = ArrayInfo(has_cpu_buffer=True, gpu_up_to_date=True)
+
+        for v in ctx.intermediate_arrays:
+            arrays[v] = ArrayInfo(has_cpu_buffer=False, gpu_up_to_date=True)
+
+        state = ArrayState(ctx, assign_map, use_map, arrays, domains, kernels)
+
+        collect_array_info(state, node)
+
+        if state.last_kernel is not None:
+            kernels[state.last_kernel].finish = True
+
+        for v in ctx.output_arrays:
+            state.cpu_access(v, write=False)
+
+        for v, a in arrays.iteritems():
+            if not a.has_gpu_buffer:
+                continue
+            kernels[a.last_gpu_access].releases.add(v)
+
+        kernels["arrays"] = [v for v in ctx.intermediate_arrays if arrays[v].has_cpu_buffer]
 
     ast = build_ast(stmts, node)
     return ast

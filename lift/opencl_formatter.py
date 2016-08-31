@@ -1,4 +1,6 @@
 from .c_formatter import format_ast, format_arguments
+from .utils import product
+
 
 OPENCL_TEMPLATE = """__kernel
 void
@@ -71,15 +73,50 @@ clReleaseContext(context);
 """
 
 
-KERNEL_TEMPLATE = """{{
+KERNEL_TEMPLATE = """{creates}
+{copyins}
+
+{{
 cl_kernel kernel = clCreateKernel(program, "kernel{id}", NULL);
-{arguments}
+{setargs}
 size_t global_sizes[] = {{ {global_sizes} }};
 size_t block_sizes[] = {{ {block_sizes} }};
 clEnqueueNDRangeKernel(queue, kernel, {n}, NULL, global_sizes, block_sizes, 0, NULL, NULL);
 clReleaseKernel(kernel);
 }}
+
+{copyouts}
+{releases}
+{finish}
 """
+
+def format_setargs(arrays):
+    for i, v in enumerate(arrays):
+        yield "clSetKernelArg(kernel, {}, sizeof(cl_mem), (void *)&mem_{});\n".format(i,v)
+
+
+def format_creates(table, arrays):
+    for v in arrays:
+        yield "cl_mem mem_{name} = clCreateBuffer(context, CL_MEM_READ_WRITE, {size} * sizeof(float), NULL, NULL);\n".format(
+            name = v,
+            size = product(table.vars[v].shape))
+
+def format_releases(arrays):
+    for v in arrays:
+        yield "clReleaseMemObject(mem_{});\n".format(v)
+
+def format_copyins(table, arrays):
+    for v in arrays:
+        yield "clEnqueueWriteBuffer(queue, mem_{name}, CL_TRUE, 0, {size} * sizeof(float), {name}, 0, NULL, NULL);\n".format(
+            name = v,
+            size = product(table.vars[v].shape))
+
+def format_copyouts(table, arrays):
+    for v in arrays:
+        yield "clEnqueueReadBuffer(queue, mem_{name}, CL_TRUE, 0, {size} * sizeof(float), {name}, 0, NULL, NULL);\n".format(
+            name = v,
+            size = product(table.vars[v].shape))
+
 
 def format_opencl(name, table, ctx, ast, kernels):
     def format_opencl_kernel(kernel_id):
@@ -90,11 +127,16 @@ def format_opencl(name, table, ctx, ast, kernels):
                 "%d*%d"%(a,b)
                 for a,b in zip(kernel.grid_sizes,kernel.block_sizes)),
             block_sizes = ", ".join(str(b) for b in kernel.block_sizes),
-            arguments = "".join(
-                "clSetKernelArg(kernel, {}, sizeof(cl_mem), (void *)&mem_{});\n".format(i,v)
-                for i, v in enumerate(kernel.arrays)),
-            n = len(kernel.grid_sizes)
+            setargs = "".join(format_setargs(kernel.arrays)),
+            n = len(kernel.grid_sizes),
+            creates = "".join(format_creates(table, kernel.creates)),
+            copyins = "".join(format_copyins(table, kernel.copy_ins)),
+            copyouts = "".join(format_copyouts(table, kernel.copy_outs)),
+            releases = "".join(format_releases(kernel.releases)),
+            finish = "clFinish(queue);" if kernel.finish else "",
         )
+
+    arrays = kernels.pop("arrays")
 
     return C_TEMPLATE.format(
         name = name,
