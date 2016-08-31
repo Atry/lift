@@ -1,82 +1,56 @@
-def get_shapes(table, ctx):
-    vars = (
-        ctx.input_arrays.keys()
-        + ctx.output_arrays.keys()
-        + ctx.intermediate_arrays.keys()
-        + ctx.const_arrays.keys())
-
-    return {v:table.vars[v].shape for v in vars}
-
-
-def format_arguments(table, ctx):
-    vars = (
-        ctx.input_arrays.keys()
-        + ctx.output_arrays.keys())
-
-    for v in vars:
-        yield "float %s%s"%(v, "".join("[%d]"%(s,) for s in table.vars[v].shape[::-1]))
-
-def format_scalar_consts(table, ctx):
-    for k,v in ctx.const_values.items():
-        if len(table.vars[k].shape) != 0:
-            continue
-
-        yield "float %s=%s;\n" % (k, v[0])
-
-
-def format_scalar_vars(table, ctx):
-    for k in ctx.intermediate_arrays:
-        if len(table.vars[k].shape) != 0:
-            continue
-
-        yield "float %s;\n" % (k,)
-
-
 def format_consts(table, ctx):
     for k,v in ctx.const_values.items():
         shape = table.vars[k].shape[::-1]
         if len(shape) == 0:
-            continue
+            yield "float %s[1]={%s};\n" % (k, v[0])
+        else:
+            yield "float %s%s={%s};\n" % (
+                k,
+                "".join("[%d]"%(s,) for s in shape),
+                ",".join("%f"%(x,) for x in v))
 
-        yield "float %s%s={%s};\n" % (
-            k,
-            "".join("[%d]"%(s,) for s in shape),
-            ",".join("%f"%(x,) for x in v))
 
-
-def format_vars(table,ctx):
-    for k in ctx.intermediate_arrays:
+def format_vars(table,arrays):
+    for k in arrays:
         shape = table.vars[k].shape[::-1]
         if len(shape) == 0:
-            continue
+            yield "float %s[1];\n" % (k,)
+        else:
+            yield "float %s%s;\n"%(k,"".join("[%d]"%(s,) for s in shape))
 
-        yield "float %s%s;\n"%(k,"".join("[%d]"%(s,) for s in shape))
+
+def format_arguments(table, arrays):
+    for v in arrays:
+        shape = table.vars[table.symbols[v]].shape[::-1]
+        if len(shape) <= 1:
+            yield "float *{} = {};\n".format(table.symbols[v], v)
+        else:
+            yield "float (*{}){} = s->{};\n".format(
+                table.symbols[v],
+                "".join("[%d]"%(s,) for s in shape[1:]),
+                v)
+
 
 
 C_TEMPLATE = """#include <math.h>
+#include "{name}_c.h"
 #define inf (1.0/0.0)
 #define max(a,b) (((a)>(b))?(a):(b))
 #define min(a,b) (((a)<(b))?(a):(b))
 
 void
-{name}(
-{arguments}){{
-{scalar_consts}{scalar_vars}{consts}{vars}
-#pragma scop
-{body}
-#pragma endscop
+{name}(struct {name}_state *s){{
+{inputs}{outputs}{vars}{body}
 }}
 """
 
 def format_c(name, table, ctx, ast):
-
+    assert not ctx.const_arrays
     return C_TEMPLATE.format(
         name = name,
-        arguments = ",\n".join(format_arguments(table, ctx)),
-        scalar_consts = "".join(format_scalar_consts(table,ctx)),
-        scalar_vars = "".join(format_scalar_vars(table,ctx)),
-        consts = "".join(format_consts(table,ctx)),
-        vars = "".join(format_vars(table,ctx)),
+        inputs = "".join(format_arguments(table, table.inputs)),
+        outputs = "".join(format_arguments(table, table.outputs)),
+        vars = "".join(format_vars(table, ctx.intermediate_arrays.keys())),
         body = format_ast(table, ast)
     )
 
@@ -206,7 +180,7 @@ def format_ast(table, ast, format_kernel=None):
         shape = table.vars[ast[1]].shape
         if len(shape) == 0:
             assert len(ast[2]) == 0
-            return ast[1]
+            return "({}[0])".format(ast[1])
         else:
             return "({})".format(format_element(ast[1], ast[2]))
     elif ast[0] == 'const':
@@ -218,3 +192,30 @@ def format_ast(table, ast, format_kernel=None):
         return format_kernel(ast[1])
     else:
         raise NotImplementedError
+
+
+def format_struct_field(table, v):
+    shape = table.vars[table.symbols[v]].shape[::-1]
+    if len(shape) <= 1:
+        return "float *{};\n".format(k)
+    return "float (*{}){};\n".format(
+        v,
+        "".join("[%d]"%(s,) for s in shape[1:]))
+
+HEADER_TEMPLATE = """#pragma once
+
+struct {name}_state {{
+{inputs}{outputs}
+}};
+
+void {name}(struct {name}_state *s);
+"""
+
+def format_c_header(name, table):
+    return HEADER_TEMPLATE.format(
+        name = name,
+        inputs = "".join(format_struct_field(table,v)
+                         for v in table.inputs),
+        outputs = "".join(format_struct_field(table,v)
+                         for v in table.outputs)
+    )

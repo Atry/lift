@@ -1,7 +1,7 @@
 import re
 import islpy as isl
 from .utils import Counter
-from .isl_utils import to_sets, to_list, list_to_multival
+from .isl_utils import to_sets, to_list, list_to_multival, find_kernel_id
 
 
 OP = {
@@ -456,3 +456,20 @@ def mark_kernel(names, node):
 
 def mark_kernels(schedule):
     return mark_kernel(Counter("kernel[%d]"), schedule.get_root()).get_schedule()
+
+
+def remove_kernel_mark(node):
+    if find_kernel_id(node) is not None:
+        return node.delete()
+
+    n = node.n_children()
+    for i in xrange(n):
+        node = node.child(i)
+        node = remove_kernel_mark(node)
+        node = node.parent()
+
+    return node
+
+
+def remove_kernel_marks(schedule):
+    return remove_kernel_mark(schedule.get_root()).get_schedule()

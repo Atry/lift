@@ -222,5 +222,6 @@ def check_stmts(stmts):
 
     for k, v in table.outputs.iteritems():
         assert table.vars[table.symbols[k]].shape == v.shape
+        assert not isinstance(table.vars[table.symbols[k]], symbol.Input)
 
     return table

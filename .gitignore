@@ -3,5 +3,7 @@
 *.pyo
 *.parsetab
 *.yaml
-*.c
+*_*.c
+*.h
 *.cl
+*.elf

@@ -106,8 +106,8 @@ class Statements(dict):
 class Context(object):
 
 
-    def __init__(self):
-        self.isl_context = isl.Context.alloc()
+    def __init__(self, isl_context):
+        self.isl_context = isl_context
         self.stmt_name = Counter("S%d")
         self.const_values = {}
 
@@ -428,8 +428,8 @@ def add_acc_fini(ctx, name, shape):
     ctx.fini_stmts.add((v, ('var', v)))
 
 
-def compile(table):
-    ctx = Context()
+def compile(table, isl_context):
+    ctx = Context(isl_context)
 
     for k in table.inputs:
         name = table.symbols[k]

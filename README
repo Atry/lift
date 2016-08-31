@@ -2,9 +2,17 @@ LIsp-Flavoured Tensor
 
 further development after the tutorial
 
-to generate OpenCL code for conv.model
+run OpenCL code for matmul.model
 
-  python -m lift conv func conv.model
+  # this will generate matmul_cl.h, matmul_cl.c, matmul.cl
+  python -m lift --emit opencl matmul matmul.model
+
+  # compile
+  gcc -DUSE_OPENCL -o matmul.elf -Wl,--format=binary matmul.cl -Wl,--format=default matmul.c matmul_cl.c -lOpenCL
+
+  # run
+  ./matmul.elf
+
 
 Requirements:
 
