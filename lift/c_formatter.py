@@ -165,7 +165,13 @@ def format_ast(table, ast, format_kernel=None):
             else_ = format_ast(table, ast[3], format_kernel))
     elif ast[0] == 'assign':
         assert ast[1][0] == 'element'
-        shape = table.vars[ast[1][1]].shape
+        name = ast[1][1]
+        if name.startswith("local_"):
+            name = name[6:]
+        elif name.startswith("private_"):
+            name = name[8:]
+
+        shape = table.vars[name].shape
         if len(shape) == 0:
             assert len(ast[1][2]) == 0
             return "{} = {};\n".format(
@@ -177,7 +183,13 @@ def format_ast(table, ast, format_kernel=None):
     elif ast[0] == 'call':
         return format_call(table, ast[1], ast[2])
     elif ast[0] == 'element':
-        shape = table.vars[ast[1]].shape
+        name = ast[1]
+        if name.startswith("local_"):
+            name = name[6:]
+        elif name.startswith("private_"):
+            name = name[8:]
+
+        shape = table.vars[name].shape
         if len(shape) == 0:
             assert len(ast[2]) == 0
             return "({}[0])".format(ast[1])

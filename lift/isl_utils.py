@@ -71,3 +71,58 @@ def get_sizes(sizes, name, kernel_id):
                 set.plain_get_val_if_fixed(
                     isl.dim_type.set, i).get_num_si()
                 for i in xrange(n)]
+
+
+def detect_constraint_stride(ctx, c, pos):
+    stride = isl.Val.one(ctx)
+
+    if not c.is_equality():
+        return stride
+    if not c.involves_dims(isl.dim_type.set, pos, 1):
+        return stride
+
+    stride = isl.Val.zero(ctx)
+    n_div = c.dim(isl.dim_type.div)
+
+    for i in xrange(n_div):
+        stride = stride.gcd(c.get_coefficient_val(isl.dim_type.div, i))
+
+    m = stride.gcd(c.get_coefficient_val(isl.dim_type.set, pos))
+    stride = stride.div(m)
+
+    if stride.is_zero():
+        stride = isl.Val.one(ctx)
+    return stride
+
+
+def detect_stride(ctx, constraints, pos):
+    stride = isl.Val.one(ctx)
+
+    for c in constraints:
+        s = detect_constraint_stride(ctx, c, pos)
+        stride = stride.mul(s).div(stride.gcd(s))
+
+    return stride.get_num_si()
+
+
+def detect_strides(domain):
+    constraints = domain.get_constraints()
+    n = domain.dim(isl.dim_type.set)
+
+    ctx = domain.get_ctx()
+
+    return [detect_stride(ctx, constraints, i)
+            for i in xrange(n)]
+
+
+def scale_down_node(node):
+    domain = isl.Set.from_union_set(
+        node.band_get_partial_schedule_union_map()
+        .intersect_domain(node.get_domain())
+        .range()).affine_hull()
+
+    strides = detect_strides(domain)
+
+    mv = list_to_multival(node.band_get_space(), strides)
+    node = node.band_scale_down(mv)
+    return node

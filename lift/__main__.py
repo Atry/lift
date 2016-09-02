@@ -25,7 +25,7 @@ name = args.output
 # sizes = isl.UnionMap(args.sizes, isl_context)
 
 sizes = isl.UnionMap(
-    "{ kernel[i] -> grid[2,2]; kernel[i] -> block[2,2]; kernel[i] -> tile[2,2]}",
+    "{ kernel[i] -> grid[2,2]; kernel[i] -> block[2,2]; kernel[i] -> tile[2,2,2]}",
     isl_context)
 
 stmts = ()
@@ -57,6 +57,8 @@ isl_context.set_schedule_separate_components(1)
 isl_context.set_schedule_treat_coalescing(1)
 isl_context.set_schedule_outer_coincidence(1)
 
+schedule = mark_kernels(schedule)
+
 if args.emit == 'schedule':
     with open(name+".yaml", "w") as f:
         f.write(schedule.to_str())
@@ -64,7 +66,6 @@ if args.emit == 'schedule':
     schedule.dump()
     exit(0)
 
-schedule = mark_kernels(schedule)
 schedule = tile_kernels(schedule, sizes)
 
 if args.emit == 'c':

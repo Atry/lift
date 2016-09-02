@@ -1,7 +1,8 @@
 import re
 import islpy as isl
 from .utils import Counter
-from .isl_utils import to_sets, to_list, list_to_multival, find_kernel_id
+from .isl_utils import to_sets, to_list, list_to_multival, find_kernel_id, scale_down_node
+from .gpu import insert_context
 
 
 OP = {
@@ -16,6 +17,7 @@ OP = {
     'add': '+',
     'eq': '==',
     'and_': '&&',
+    'or_': '||',
     'mul': '*',
     'div': '/',
     'pdiv_q': '/',
@@ -90,11 +92,14 @@ def get_stmt(ctx, name):
     return stmt
 
 
-def transform_var(bmap, iterator_map, build):
-    pma = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map.apply_range(bmap)))
-    expr = build.access_from_pw_multi_aff(pma)
+def expr_to_element(expr):
     n = expr.get_op_n_arg()
     return ('element', expr.get_op_arg(0).get_id().get_name() , tuple(convert_expr(expr.get_op_arg(i)) for i in xrange(1,n)))
+
+
+def transform_var(bmap, iterator_map, build):
+    pma = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map.apply_range(bmap)))
+    return expr_to_element(build.access_from_pw_multi_aff(pma))
 
 
 def transform_expr(expr, iterator_map, build):
@@ -113,6 +118,31 @@ def transform_stmt(stmt, iterator_map, build):
 
     return ("assign", transform_var(stmt[0], iterator_map, build),
             transform_expr(stmt[1], iterator_map, build))
+
+
+def map_kernel_var(bmap, kernel):
+    name = bmap.get_tuple_name(isl.dim_type.out)
+
+    if name in kernel.privates:
+        return bmap.apply_range(kernel.private_arrays[name][1])
+    else:
+        return bmap.apply_range(kernel.local_arrays[name][1])
+
+
+def map_kernel_expr(expr, kernel):
+    if expr[0] == 'var':
+        return ('var', map_kernel_var(expr[1], kernel))
+    elif expr[0] == 'const':
+        return expr
+    elif expr[0] == 'call':
+        return ('call', expr[1], tuple(map_kernel_expr(e, kernel) for e in expr[2]))
+    else:
+        raise NotImplementedError
+
+
+def map_kernel_stmt(stmt, kernel):
+    name = stmt[0].get_tuple_name(isl.dim_type.in_)
+    return (map_kernel_var(stmt[0], kernel), map_kernel_expr(stmt[1], kernel))
 
 
 class ArrayInfo(object):
@@ -247,11 +277,67 @@ def collect_array_info(state, node):
         raise NotImplementedError
 
 
+def generate_copy_ast(schedule_map, storage_map, grid_sizes, block_sizes, private=False):
+    names = Counter("E%d")
+    stmts_in = {}
+    stmts_out = {}
+
+    def at_each_domain(node, build):
+        if node.get_type() != isl.ast_node_type.user:
+            return node
+
+        expr = node.user_get_expr()
+        assert expr.get_type() == isl.ast_expr_type.op
+        assert expr.get_op_type() == isl.ast_op_type.call
+        expr = expr.get_op_arg(0)
+        assert expr.get_type() == isl.ast_expr_type.id
+
+        name = expr.get_id().get_name()
+
+        schedule = build.get_schedule()
+        iterator_map = schedule.reverse()
+
+        pma1 = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map.apply_range(storage_map)))
+        pma2 = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map))
+
+        elem1 = expr_to_element(build.access_from_pw_multi_aff(pma1))
+        elem2 = expr_to_element(build.access_from_pw_multi_aff(pma2))
+
+        name = names.next()
+        stmts_in[name] = ('assign', elem1, elem2)
+        stmts_out[name] = ('assign',elem2, elem1)
+
+        return isl.AstNode.alloc_user(isl.AstExpr.from_id(isl.Id.alloc(schedule_map.get_ctx(), name, None)))
+
+    node = isl.ScheduleNode.from_domain(schedule_map.domain())
+    node = node.child(0)
+    node = insert_context(node, grid_sizes, block_sizes)
+    node = node.child(0)
+    node = node.insert_partial_schedule(isl.MultiUnionPwAff.from_union_map(schedule_map))
+
+    build = isl.AstBuild.alloc(schedule_map.get_ctx())
+    build, _h = build.set_at_each_domain(at_each_domain)
+    node = build.node_from_schedule(node.get_schedule())
+
+    return build_ast(stmts_in, node), build_ast(stmts_out, node)
+
+
+class O(object):
+    pass
 
 def codegen(ctx, schedule, kernels=None):
     names = Counter("E%d")
     stmts = {}
     domains = {}
+
+    o = O()
+    o.kernel_id = None
+
+    def before_mark(id, build):
+        match = re.match(r'kernel\[(\d+)\]', id.get_name())
+        if match is not None:
+            o.kernel_id = int(match.group(1))
+        return isl.stat.ok
 
     def at_each_domain(node, build):
         if node.get_type() != isl.ast_node_type.user:
@@ -270,23 +356,26 @@ def codegen(ctx, schedule, kernels=None):
         iterator_map = schedule.reverse()
 
         name = names.next()
+
+        if o.kernel_id is not None:
+            stmt = map_kernel_stmt(stmt, kernels[o.kernel_id])
+
         stmts[name] = transform_stmt(stmt, iterator_map, build)
         domains[name] = schedule.domain()
 
         return isl.AstNode.alloc_user(isl.AstExpr.from_id(isl.Id.alloc(ctx.isl_context, name, None)))
 
     def after_mark(node, build):
-        id = node.mark_get_id()
-        match = re.match(r'kernel\[(\d+)\]', id.get_name())
-        if match is None:
+        if o.kernel_id is None:
             return node
 
-        kernel_id = int(match.group(1))
-        kernels[kernel_id].ast = node.mark_get_node()
+        id = node.mark_get_id()
+        kernels[o.kernel_id].ast = node.mark_get_node()
         return isl.AstNode.alloc_user(isl.AstExpr.from_id(id))
 
     build = isl.AstBuild.alloc(ctx.isl_context)
     # must hold handle here
+    build, _h0 = build.set_before_each_mark(before_mark)
     build, _h1 = build.set_after_each_mark(after_mark)
     build, _h2 = build.set_at_each_domain(at_each_domain)
     node = build.node_from_schedule(schedule)
@@ -302,15 +391,21 @@ def codegen(ctx, schedule, kernels=None):
         use_map = ctx.get_use_map()
 
         for kernel in kernels.itervalues():
-            kernel.ast = build_ast(stmts, kernel.ast)
-            writes = assign_map.intersect_domain(kernel.domain).range()
-            reads = use_map.intersect_domain(kernel.domain).range()
-            accesses = writes.union(reads)
-            kernel.reads = list({ s.get_tuple_name() for s in to_sets(reads) })
-            kernel.writes = list({ s.get_tuple_name() for s in to_sets(writes) })
-            kernel.arrays = list({ s.get_tuple_name() for s in to_sets(accesses) })
-            kernel.finish = False
+            kernel.local_copy_ins = []
+            kernel.local_copy_outs = []
 
+            for v, m in kernel.private_arrays.iteritems():
+                in_, out = generate_copy_ast(m[0], m[1], kernel.grid_sizes, kernel.block_sizes)
+                kernel.local_copy_ins.append(in_)
+                kernel.local_copy_outs.append(out)
+
+            for v, m in kernel.local_arrays.iteritems():
+                in_, out = generate_copy_ast(m[0], m[1], kernel.grid_sizes, kernel.block_sizes)
+                kernel.local_copy_ins.append(in_)
+                kernel.local_copy_outs.append(out)
+
+            kernel.ast = build_ast(stmts, kernel.ast)
+            kernel.finish = False
 
             # create buffer
             kernel.creates = set()
@@ -387,57 +482,6 @@ def get_schedule_constraints(ctx):
     )
 
     return constraints
-
-
-def detect_constraint_stride(ctx, c, pos):
-    stride = isl.Val.one(ctx)
-
-    if not c.is_equality():
-        return stride
-    if not c.involves_dims(isl.dim_type.set, pos, 1):
-        return stride
-
-    stride = isl.Val.zero(ctx)
-    n_div = c.dim(isl.dim_type.div)
-
-    for i in xrange(n_div):
-        stride = stride.gcd(c.get_coefficient_val(isl.dim_type.div, i))
-
-    m = stride.gcd(c.get_coefficient_val(isl.dim_type.set, pos))
-    stride = stride.div(m)
-
-    if stride.is_zero():
-        stride = isl.Val.one(ctx)
-    return stride
-
-
-def detect_stride(ctx, constraints, pos):
-    stride = isl.Val.one(ctx)
-
-    for c in constraints:
-        s = detect_constraint_stride(ctx, c, pos)
-        stride = stride.mul(s).div(stride.gcd(s))
-
-    return stride.get_num_si()
-
-
-def scale_down_node(node):
-    domain = isl.Set.from_union_set(
-        node.band_get_partial_schedule_union_map()
-        .intersect_domain(node.get_domain())
-        .range()).affine_hull()
-
-    constraints = domain.get_constraints()
-    n = domain.dim(isl.dim_type.set)
-
-    ctx = node.get_ctx()
-
-    strides = [detect_stride(ctx, constraints, i)
-               for i in xrange(n)]
-
-    mv = list_to_multival(node.band_get_space(), strides)
-    node = node.band_scale_down(mv)
-    return node
 
 
 def mark_kernel(names, node):
