@@ -13,8 +13,9 @@ from .opencl_formatter import format_cl_kernel, format_cl_header, format_cl
 
 p = argparse.ArgumentParser()
 p.add_argument('--emit', default='schedule', choices=('schedule','c','opencl'), help='type of output')
-# p.add_argument('--sizes', required=True, help='per-kernel tile/grid/block sizes')
+p.add_argument('--sizes', required=True, help='per-kernel tile/grid/block sizes')
 p.add_argument('--schedule', metavar='FILE', help='use schedule from FILE')
+p.add_argument('--dump-schedule', action='store_true', help='dump schedule')
 p.add_argument('output', help='name of output')
 p.add_argument('filename', nargs='+', help='filename of source file')
 args = p.parse_args()
@@ -22,11 +23,7 @@ args = p.parse_args()
 isl_context = isl.Context.alloc()
 
 name = args.output
-# sizes = isl.UnionMap(args.sizes, isl_context)
-
-sizes = isl.UnionMap(
-    "{ kernel[i] -> grid[2,2]; kernel[i] -> block[2,2]; kernel[i] -> tile[2,2,2]}",
-    isl_context)
+sizes = isl.UnionMap(args.sizes, isl_context)
 
 stmts = ()
 
@@ -42,13 +39,6 @@ table = check_stmts(stmts)
 context = compile(table, isl_context)
 contract_arrays(context)
 
-if args.schedule is None:
-    constraints = get_schedule_constraints(context)
-    schedule = constraints.compute_schedule()
-else:
-    with open(args.schedule, 'r') as f:
-        schedule = isl.Schedule.read_from_str(ctx, f.read())
-
 isl_context.set_ast_build_detect_min_max(1)
 isl_context.set_schedule_maximize_band_depth(1)
 isl_context.set_schedule_maximize_coincidence(1)
@@ -57,14 +47,22 @@ isl_context.set_schedule_separate_components(1)
 isl_context.set_schedule_treat_coalescing(1)
 isl_context.set_schedule_outer_coincidence(1)
 
-schedule = mark_kernels(schedule)
+if args.schedule is None:
+    constraints = get_schedule_constraints(context)
+    schedule = constraints.compute_schedule()
+    schedule = mark_kernels(schedule)
+else:
+    with open(args.schedule, 'r') as f:
+        schedule = isl.Schedule.read_from_str(ctx, f.read())
+
+if args.dump_schedule:
+    schedule.dump()
 
 if args.emit == 'schedule':
     with open(name+".yaml", "w") as f:
         f.write(schedule.to_str())
-
-    schedule.dump()
     exit(0)
+
 
 schedule = tile_kernels(schedule, sizes)
 

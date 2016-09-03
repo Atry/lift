@@ -396,13 +396,17 @@ def codegen(ctx, schedule, kernels=None):
 
             for v, m in kernel.private_arrays.iteritems():
                 in_, out = generate_copy_ast(m[0], m[1], kernel.grid_sizes, kernel.block_sizes)
-                kernel.local_copy_ins.append(in_)
-                kernel.local_copy_outs.append(out)
+                if v in kernel.reads:
+                    kernel.local_copy_ins.append(in_)
+                if v in kernel.writes:
+                    kernel.local_copy_outs.append(out)
 
             for v, m in kernel.local_arrays.iteritems():
                 in_, out = generate_copy_ast(m[0], m[1], kernel.grid_sizes, kernel.block_sizes)
-                kernel.local_copy_ins.append(in_)
-                kernel.local_copy_outs.append(out)
+                if v in kernel.reads:
+                    kernel.local_copy_ins.append(in_)
+                if v in kernel.writes:
+                    kernel.local_copy_outs.append(out)
 
             kernel.ast = build_ast(stmts, kernel.ast)
             kernel.finish = False

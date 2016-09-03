@@ -5,7 +5,7 @@ further development after the tutorial
 run OpenCL code for matmul.model
 
   # this will generate matmul_cl.h, matmul_cl.c, matmul.cl
-  python -m lift --emit opencl matmul matmul.model
+  python -m lift --emit opencl --sizes '{ kernel[i] -> grid[2,2]; kernel[i] -> block[2,2]; kernel[i] -> tile[2,2,2]}' matmul matmul.model
 
   # compile
   gcc -DUSE_OPENCL -o matmul.elf -Wl,--format=binary matmul.cl -Wl,--format=default matmul.c matmul_cl.c -lOpenCL
