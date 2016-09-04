@@ -36,6 +36,9 @@ class Array(object):
     def allclose(self, other):
         return (self.shape == other.shape) and all(round(abs(x-y),7)==0 for x, y in zip(self.data,other.data))
 
+    def __repr__(self):
+        return "Array(%s, %s)"%(repr(self.shape),repr(self.data))
+
 
 def interp_monad(op, ranks, sy, vy, vz):
     if not ranks:
@@ -194,13 +197,13 @@ def interp_acc_dyad_y(op, ranks, sx, vx, sy, vy, vz, acc, vg):
                       vg.subview(i, py))
 
 
-def interp(table, **kwargs):
+def _interp(table, kwargs):
     values = {}
 
-    for k, v in kwargs.items():
-        values[table.symbols[k]] = v
+    for k in table.inputs:
+        values[table.symbols[k]] = kwargs[k]
 
-    for name in table.itervars():
+    for name in table.vars:
         if name in values:
             continue
 
@@ -270,3 +273,14 @@ def interp(table, **kwargs):
         values[name] = z
 
     return values
+
+
+def interp(table, **kwargs):
+    return _interp(table, kwargs)
+
+
+def shell_interp(table, values):
+    d = _interp(table, values)
+
+    for k in table.outputs:
+        values[k] = d[table.symbols[k]]
