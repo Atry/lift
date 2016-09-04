@@ -3,7 +3,7 @@ from .check import check_stmts
 from .interp import shell_interp, Array
 from .parser import Parser
 
-__all__ = ('model_source', 'model_file', 'Array')
+__all__ = ('load_source', 'load_file', 'Array')
 
 def code_template():
     shell_interp = 'shell_interp'
