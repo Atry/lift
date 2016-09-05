@@ -2,6 +2,9 @@
 LIsp Flavoured Tensor
 =====================
 
+LiFT compiles formula of neural network to executable code.
+
+
 Requirements
 ============
 
@@ -63,7 +66,6 @@ compile and run
 
 .. code:: bash
 
-    $ cat matmul.model
     $ python -m lift --emit opencl --sizes '{ kernel[i] -> grid[2,2]; kernel[i] -> block[2,2]; kernel[i] -> tile[2,2,2]}' matmul matmul.model
     $ gcc -DUSE_OPENCL -o matmul.elf -Wl,--format=binary matmul.cl -Wl,--format=default matmul.c matmul_cl.c -lOpenCL
     $ ./matmul.elf
@@ -77,6 +79,31 @@ compile and run
     13664 14140 14616 15092 15568 16044 16520 16996
 
 
+Compile Options
+===============
+
+\--dump-schedule
+
+  print schedule to stderr
+
+\--schedule FILE
+
+  use schedule from FILE.
+
+  Because schedule generation might take very very long time, you
+  might want to reuse previously generated schedule.
+
+\--emit {schedule,c,opencl}
+
+  choose schedule to save schedule
+
+\--sizes SIZES
+
+  see 'Specifying tile, grid and block sizes' section in `README of ppcg`__ .
+
+.. __: http://repo.or.cz/ppcg.git/blob/0e6a65ad59f115cb1e092ab4b9da67ab606d186d:/README#l74
+
+
 Shell
 =====
 
@@ -85,6 +112,8 @@ much slower and consume lots more memory than you might expected.
 
 .. code:: pycon
 
+    >>> from lift import *
+    >>>
     >>> SOURCE = """
     ... A :: (in 8 8)
     ... B :: (out 8 8)
@@ -94,6 +123,7 @@ much slower and consume lots more memory than you might expected.
     >>> exec load_source(SOURCE)
     >>> B
     Array((8, 8), [1120.0, 1148.0, 1176.0, 1204.0, 1232.0, 1260.0, 1288.0, 1316.0, 2912.0, 3004.0, 3096.0, 3188.0, 3280.0, 3372.0, 3464.0, 3556.0, 4704.0, 4860.0, 5016.0, 5172.0, 5328.0, 5484.0, 5640.0, 5796.0, 6496.0, 6716.0, 6936.0, 7156.0, 7376.0, 7596.0, 7816.0, 8036.0, 8288.0, 8572.0, 8856.0, 9140.0, 9424.0, 9708.0, 9992.0, 10276.0, 10080.0, 10428.0, 10776.0, 11124.0, 11472.0, 11820.0, 12168.0, 12516.0, 11872.0, 12284.0, 12696.0, 13108.0, 13520.0, 13932.0, 14344.0, 14756.0, 13664.0, 14140.0, 14616.0, 15092.0, 15568.0, 16044.0, 16520.0, 16996.0])
+    >>>
 
 
 Ranks
@@ -103,10 +133,22 @@ We use the same ranks as `J`__.
 
 .. __: http://www.jsoftware.com/help/learning/07.htm
 
+J
+
+.. code::
+
+      A =: 1 2 3
+      B =: +/ A
+      B
+   6
+
+LiFT
+
+Reduce has been extended to multiple dimensions in LiFT, thus we have
+1 here.
+
 .. code:: pycon
 
-    >>> from lift import *
-    >>>
     >>> SOURCE = """
     ... A :: (in 3)
     ... B :: (out)
@@ -117,6 +159,20 @@ We use the same ranks as `J`__.
     >>> B
     Array((), [6.0])
     >>>
+
+J
+
+.. code::
+
+      A =: 2 3 $ 1 2 3 4 5 6
+      B =: +/ A
+      B
+   5 7 9
+
+LiFT
+
+.. code:: pycon
+
     >>> SOURCE = """
     ... A :: (in 2 3)
     ... B :: (out 3)
@@ -127,6 +183,20 @@ We use the same ranks as `J`__.
     >>> B
     Array((3,), [5.0, 7.0, 9.0])
     >>>
+
+J
+
+.. code::
+
+      A =: 2 3 $ 1 2 3 4 5 6
+      B =: (+/)"1 A
+   6 15
+
+
+LiFT
+
+.. code:: pycon
+
     >>> SOURCE = """
     ... A :: (in 2 3)
     ... B :: (out 2)
@@ -137,6 +207,20 @@ We use the same ranks as `J`__.
     >>> B
     Array((2,), [6.0, 15.0])
     >>>
+
+J
+
+.. code::
+
+      A =: 1 2
+      B =: 3 4
+      C =: A + B
+   4 6
+
+LiFT
+
+.. code:: pycon
+
     >>> SOURCE = """
     ... A :: (in 2)
     ... B :: (in 2)
@@ -149,6 +233,20 @@ We use the same ranks as `J`__.
     >>> C
     Array((2,), [4, 6])
     >>>
+
+J
+
+.. code::
+
+      A =: 1 3
+      B =: 3 4
+      C =: A (+"0 1) B
+   4 5 6 7
+
+LiFT
+
+.. code:: pycon
+
     >>> SOURCE = """
     ... A :: (in 2)
     ... B :: (in 2)
@@ -160,6 +258,7 @@ We use the same ranks as `J`__.
     >>> exec load_source(SOURCE)
     >>> C
     Array((2, 2), [4, 5, 6, 7])
+    >>>
 
 
 Gradient
@@ -169,6 +268,8 @@ We have automatic differentiation in LiFT. The example here is taken
 from `A Step by Step Backpropagation Example`__ .
 
 .. __: https://mattmazur.com/2015/03/17/a-step-by-step-backpropagation-example/
+
+:code:`dW1 :: (grad Loss W1)` means :code:`dW1` is the derivative of :code:`Loss` with respect to :code:`W1`
 
 
 .. code:: pycon
@@ -217,3 +318,4 @@ from `A Step by Step Backpropagation Example`__ .
     Array((2, 2), [0.1497807161327628, 0.19956143226552567, 0.24975114363236958, 0.29950228726473915])
     >>> nW2
     Array((2, 2), [0.35891647971788465, 0.4086661860762334, 0.5113012702387375, 0.5613701211079891])
+    >>>
