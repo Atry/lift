@@ -2,7 +2,21 @@
 LIsp Flavoured Tensor
 =====================
 
-LiFT compiles formula of neural network to executable code.
+LiFT compiles formula of neural network to executable code. LiFT can
+be seen as `Theano`__ with `ranks`__ , though LiFT does not work with
+NumPy. It emits C code instead. With ranks, LiFT does not need as many
+built-in functionality as Theano do. As you can see in the quickstart
+section, dot product can be expressed without a built-in dot.
+
+As you might have already found out, this will lead to a hugh 8x8x8
+intermediate array. So BE CAUTIOUS when trying in the Python
+shell. However, when compiled, it will be eliminated. LiFT depends
+solely on `isl`__ to eliminate unnecessary arrays and to optimize, so
+that all OpenCL code is generated rather than hand-written.
+
+.. __: http://deeplearning.net/software/theano/
+.. __: http://www.jsoftware.com/help/learning/07.htm
+.. __: http://isl.gforge.inria.fr/
 
 
 Requirements
@@ -83,23 +97,19 @@ Compile Options
 ===============
 
 \--dump-schedule
-
-  print schedule to stderr
+    print schedule to stderr
 
 \--schedule FILE
+    use schedule from FILE.
 
-  use schedule from FILE.
-
-  Because schedule generation might take very very long time, you
-  might want to reuse previously generated schedule.
+    Because schedule generation would take very very long time, you
+    might want to reuse previously generated schedule.
 
 \--emit {schedule,c,opencl}
-
-  choose schedule to save schedule
+    choose schedule to save schedule
 
 \--sizes SIZES
-
-  see 'Specifying tile, grid and block sizes' section in `README of ppcg`__ .
+    see 'Specifying tile, grid and block sizes' section in `README of ppcg`__ .
 
 .. __: http://repo.or.cz/ppcg.git/blob/0e6a65ad59f115cb1e092ab4b9da67ab606d186d:/README#l74
 
@@ -128,10 +138,6 @@ much slower and consume lots more memory than you might expected.
 
 Ranks
 =====
-
-We use the same ranks as `J`__.
-
-.. __: http://www.jsoftware.com/help/learning/07.htm
 
 J
 
@@ -319,3 +325,34 @@ from `A Step by Step Backpropagation Example`__ .
     >>> nW2
     Array((2, 2), [0.35891647971788465, 0.4086661860762334, 0.5113012702387375, 0.5613701211079891])
     >>>
+
+
+Builtins
+========
+
+x + y
+    plus
+
+x - y
+    minus
+
+x * y
+    multiply
+
+x / y
+    divide
+
+x ** y
+    power
+
+log y
+    log
+
+exp y
+    exp
+
+x <. y
+    min
+
+x >. y
+    max
