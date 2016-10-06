@@ -51,11 +51,13 @@ def rename_stmt(stmt, name):
 
 def get_uses(expr):
     if expr[0] == 'var':
-        return (expr[1],)
+        yield expr[1]
     elif expr[0] == 'const':
-        return ()
+        return
     elif expr[0] == 'call':
-        return sum((get_uses(e) for e in expr[2]), ())
+        for e in expr[2]:
+            for u in get_uses(e):
+                yield u
     else:
         raise NotImplementedError
 
@@ -94,7 +96,7 @@ class Statements(dict):
         return self.union_maps(s[0] for s in self.values())
 
     def get_use_map(self):
-        return self.union_maps(sum((get_uses(s[1]) for s in self.values()), ()))
+        return self.union_maps(sum((tuple(get_uses(s[1])) for s in self.values()), ()))
 
     def union_maps(self, maps):
         umap = isl.UnionMap("{}", self.ctx.isl_context)

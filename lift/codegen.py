@@ -23,6 +23,7 @@ OP = {
     'pdiv_q': '/',
     'pdiv_r': '%',
     'zdiv_r': '%',
+    'select': 'select'
 }
 
 def convert_expr(expr):
@@ -87,6 +88,8 @@ def get_stmt(ctx, name):
         stmt = ctx.update_stmts[name]
     elif name in ctx.fini_stmts:
         stmt = ctx.fini_stmts[name]
+        # XXX: but how to fix update?
+        stmt = (stmt[0], ("var",stmt[0]))
     else:
         raise NotImplementedError
     return stmt
@@ -97,52 +100,55 @@ def expr_to_element(expr):
     return ('element', expr.get_op_arg(0).get_id().get_name() , tuple(convert_expr(expr.get_op_arg(i)) for i in xrange(1,n)))
 
 
-def transform_var(bmap, iterator_map, build):
+def find_group(bmap, groups=None):
+    if groups:
+        for group in groups[bmap.get_tuple_name(isl.dim_type.out)]:
+            for ref in group.refs:
+                if bmap is ref[2]:
+                    return group
+
+
+def transform_var(bmap, iterator_map, build, groups=None):
+    group = find_group(bmap, groups)
+
     pma = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map.apply_range(bmap)))
+
+    if group is not None:
+        depth = group.tiling.get_space().domain().unwrap().dim(isl.dim_type.in_)
+        dim = pma.dim(isl.dim_type.in_)
+
+        space = pma.get_space().domain().map_from_set()
+        pma2 = isl.PwMultiAff.identity(space)
+        pma2 = pma2.drop_dims(isl.dim_type.out, depth, dim-depth)
+
+        space = pma.get_space().range().map_from_set()
+        pma2 = pma2.product(isl.PwMultiAff.identity(space))
+
+        tiling = isl.PwMultiAff.from_multi_aff(group.tiling).pullback_pw_multi_aff(pma2)
+
+        space = pma.get_space().domain().map_from_set()
+        pma = isl.PwMultiAff.identity(space).range_product(pma)
+        pma = tiling.pullback_pw_multi_aff(pma)
+
     return expr_to_element(build.access_from_pw_multi_aff(pma))
 
 
-def transform_expr(expr, iterator_map, build):
+def transform_expr(expr, iterator_map, build, groups=None):
     if expr[0] == 'var':
-        return transform_var(expr[1], iterator_map, build)
+        return transform_var(expr[1], iterator_map, build, groups)
     elif expr[0] == 'const':
         return expr
     elif expr[0] == 'call':
-        return ('call', expr[1], tuple(transform_expr(e, iterator_map, build) for e in expr[2]))
+        return ('call', expr[1], tuple(transform_expr(e, iterator_map, build, groups) for e in expr[2]))
     else:
         raise NotImplementedError
 
 
-def transform_stmt(stmt, iterator_map, build):
+def transform_stmt(stmt, iterator_map, build, groups=None):
     name = stmt[0].get_tuple_name(isl.dim_type.in_)
 
-    return ("assign", transform_var(stmt[0], iterator_map, build),
-            transform_expr(stmt[1], iterator_map, build))
-
-
-def map_kernel_var(bmap, kernel):
-    name = bmap.get_tuple_name(isl.dim_type.out)
-
-    if name in kernel.privates:
-        return bmap.apply_range(kernel.private_arrays[name][1])
-    else:
-        return bmap.apply_range(kernel.local_arrays[name][1])
-
-
-def map_kernel_expr(expr, kernel):
-    if expr[0] == 'var':
-        return ('var', map_kernel_var(expr[1], kernel))
-    elif expr[0] == 'const':
-        return expr
-    elif expr[0] == 'call':
-        return ('call', expr[1], tuple(map_kernel_expr(e, kernel) for e in expr[2]))
-    else:
-        raise NotImplementedError
-
-
-def map_kernel_stmt(stmt, kernel):
-    name = stmt[0].get_tuple_name(isl.dim_type.in_)
-    return (map_kernel_var(stmt[0], kernel), map_kernel_expr(stmt[1], kernel))
+    return ("assign", transform_var(stmt[0], iterator_map, build, groups),
+            transform_expr(stmt[1], iterator_map, build, groups))
 
 
 class ArrayInfo(object):
@@ -277,51 +283,6 @@ def collect_array_info(state, node):
         raise NotImplementedError
 
 
-def generate_copy_ast(schedule_map, storage_map, grid_sizes, block_sizes, private=False):
-    names = Counter("E%d")
-    stmts_in = {}
-    stmts_out = {}
-
-    def at_each_domain(node, build):
-        if node.get_type() != isl.ast_node_type.user:
-            return node
-
-        expr = node.user_get_expr()
-        assert expr.get_type() == isl.ast_expr_type.op
-        assert expr.get_op_type() == isl.ast_op_type.call
-        expr = expr.get_op_arg(0)
-        assert expr.get_type() == isl.ast_expr_type.id
-
-        name = expr.get_id().get_name()
-
-        schedule = build.get_schedule()
-        iterator_map = schedule.reverse()
-
-        pma1 = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map.apply_range(storage_map)))
-        pma2 = isl.PwMultiAff.from_map(isl.Map.from_union_map(iterator_map))
-
-        elem1 = expr_to_element(build.access_from_pw_multi_aff(pma1))
-        elem2 = expr_to_element(build.access_from_pw_multi_aff(pma2))
-
-        name = names.next()
-        stmts_in[name] = ('assign', elem1, elem2)
-        stmts_out[name] = ('assign',elem2, elem1)
-
-        return isl.AstNode.alloc_user(isl.AstExpr.from_id(isl.Id.alloc(schedule_map.get_ctx(), name, None)))
-
-    node = isl.ScheduleNode.from_domain(schedule_map.domain())
-    node = node.child(0)
-    node = insert_context(node, grid_sizes, block_sizes)
-    node = node.child(0)
-    node = node.insert_partial_schedule(isl.MultiUnionPwAff.from_union_map(schedule_map))
-
-    build = isl.AstBuild.alloc(schedule_map.get_ctx())
-    build, _h = build.set_at_each_domain(at_each_domain)
-    node = build.node_from_schedule(node.get_schedule())
-
-    return build_ast(stmts_in, node), build_ast(stmts_out, node)
-
-
 class O(object):
     pass
 
@@ -343,6 +304,9 @@ def codegen(ctx, schedule, kernels=None):
         if node.get_type() != isl.ast_node_type.user:
             return node
 
+        schedule = build.get_schedule()
+        iterator_map = schedule.reverse()
+
         expr = node.user_get_expr()
         assert expr.get_type() == isl.ast_expr_type.op
         assert expr.get_op_type() == isl.ast_op_type.call
@@ -350,17 +314,37 @@ def codegen(ctx, schedule, kernels=None):
         assert expr.get_type() == isl.ast_expr_type.id
 
         name = expr.get_id().get_name()
-        stmt = get_stmt(ctx, name)
 
-        schedule = build.get_schedule()
-        iterator_map = schedule.reverse()
+        if name.startswith("read") or name.startswith("write"):
+            match = re.match(r'(read|write)_shared_(v\d+)_(\d+)', name)
+            group = kernels[o.kernel_id].groups[match.group(2)][int(match.group(3))]
+
+            pma = isl.PwMultiAff.from_map(isl.Map.from_union_map(schedule).reverse()).reset_tuple_id(isl.dim_type.out)
+            space = pma.get_space().range().unwrap()
+            pma2 = isl.PwMultiAff.range_map(space).pullback_pw_multi_aff(pma)
+            global_expr = expr_to_element(build.access_from_pw_multi_aff(pma2))
+
+            pma2 = isl.PwMultiAff.from_multi_aff(group.tiling).pullback_pw_multi_aff(pma)
+            local_expr = expr_to_element(build.access_from_pw_multi_aff(pma2))
+
+            if match.group(1) == "read":
+                stmt = ("assign", local_expr, global_expr)
+            elif match.group(1) == "write":
+                stmt = ("assign", global_expr, local_expr)
+            else:
+                raise NotImplementedError
+
+        elif name.startswith("sync"):
+            stmt = ('sync',)
+        else:
+            stmt = get_stmt(ctx, name)
+            if o.kernel_id is not None:
+                stmt = transform_stmt(stmt, iterator_map, build, kernels[o.kernel_id].groups)
+            else:
+                stmt = transform_stmt(stmt, iterator_map, build)
 
         name = names.next()
-
-        if o.kernel_id is not None:
-            stmt = map_kernel_stmt(stmt, kernels[o.kernel_id])
-
-        stmts[name] = transform_stmt(stmt, iterator_map, build)
+        stmts[name] = stmt
         domains[name] = schedule.domain()
 
         return isl.AstNode.alloc_user(isl.AstExpr.from_id(isl.Id.alloc(ctx.isl_context, name, None)))
@@ -380,6 +364,7 @@ def codegen(ctx, schedule, kernels=None):
     build, _h2 = build.set_at_each_domain(at_each_domain)
     node = build.node_from_schedule(schedule)
 
+
     if kernels is not None:
         assign_map = (
             ctx.init_stmts.get_assign_map()
@@ -391,25 +376,19 @@ def codegen(ctx, schedule, kernels=None):
         use_map = ctx.get_use_map()
 
         for kernel in kernels.itervalues():
-            kernel.local_copy_ins = []
-            kernel.local_copy_outs = []
-
-            for v, m in kernel.private_arrays.iteritems():
-                in_, out = generate_copy_ast(m[0], m[1], kernel.grid_sizes, kernel.block_sizes)
-                if v in kernel.reads:
-                    kernel.local_copy_ins.append(in_)
-                if v in kernel.writes:
-                    kernel.local_copy_outs.append(out)
-
-            for v, m in kernel.local_arrays.iteritems():
-                in_, out = generate_copy_ast(m[0], m[1], kernel.grid_sizes, kernel.block_sizes)
-                if v in kernel.reads:
-                    kernel.local_copy_ins.append(in_)
-                if v in kernel.writes:
-                    kernel.local_copy_outs.append(out)
-
             kernel.ast = build_ast(stmts, kernel.ast)
             kernel.finish = False
+
+            kernel.reads = set()
+            kernel.writes = set()
+            kernel.arrays = set(kernel.groups.keys())
+
+            for v, groups in kernel.groups.iteritems():
+                for group in groups:
+                    if group.has_read():
+                        kernel.reads.add(v)
+                    if group.has_write():
+                        kernel.writes.add(v)
 
             # create buffer
             kernel.creates = set()

@@ -1,8 +1,24 @@
-# mostly stolen from ppcg
+# ported from ppcg
+
+# Copyright 2010-2011 INRIA Saclay
+# Copyright 2012-2013 Ecole Normale Superieure
+# Copyright 2015-2016 Sven Verdoolaege
+#
+# Use of this software is governed by the MIT license
+#
+# Written by Sven Verdoolaege, INRIA Saclay - Ile-de-France,
+# Parc Club Orsay Universite, ZAC des vignes, 4 rue Jacques Monod,
+# 91893 Orsay, France
+# and Ecole Normale Superieure, 45 rue d’Ulm, 75230 Paris, France
+
 
 import islpy as isl
-from .utils import product
+from .utils import product, Counter
 from .isl_utils import find_kernel_id, get_sizes, list_to_multival, to_sets, to_maps, detect_strides
+from .compile import get_uses
+from .gpu_tree import gpu_tree_move_up_to, gpu_tree_move_down_to, gpu_tree_move_down_to_depth, gpu_tree_move_left_to_sync, gpu_tree_move_right_to_sync, gpu_tree_ensure_sync_after_core
+from .gpu_group import gpu_group_references
+
 
 
 class KernelInfo(object):
@@ -30,24 +46,27 @@ def n_outer_coincidence(node):
 
     return n
 
-def parameter_vector(ctx, prefix, n):
-    space = isl.Space.set_alloc(ctx, n, n)
+
+def parameter_vector(space, prefix, n):
     for i in xrange(n):
-        space = space.set_dim_name(isl.dim_type.param, i, prefix+str(i))
+        name = prefix+str(i)
+        pos = space.find_dim_by_name(isl.dim_type.param, name)
+        if pos >= 0:
+            continue
+        pos = space.dim(isl.dim_type.param)
+        space = space.add_dims(isl.dim_type.param, 1)
+        space = space.set_dim_name(isl.dim_type.param, pos, name)
 
-    bs = isl.BasicSet.universe(space)
+    ma = isl.MultiAff.zero(space)
+    ls = isl.LocalSpace.from_space(space.domain())
 
     for i in xrange(n):
-        bs = bs.add_constraint(
-            isl.Constraint.alloc_equality(space)
-            .set_coefficient_val(
-                isl.dim_type.param, i,  isl.Val.int_from_si(ctx, 1)
-            )
-            .set_coefficient_val(
-                isl.dim_type.set, i,  isl.Val.int_from_si(ctx, -1)
-            ))
+        name = prefix+str(i)
+        pos = space.find_dim_by_name(isl.dim_type.param, name)
+        aff = isl.Aff.var_on_domain(ls, isl.dim_type.param, pos)
+        ma = ma.set_aff(i, aff)
 
-    return isl.Set.from_basic_set(bs)
+    return ma
 
 
 def extract_sizes(set):
@@ -60,29 +79,24 @@ def extract_sizes(set):
         for i in xrange(n)]
 
 
-def insert_context(node, grid_sizes, block_sizes):
-    ctx = node.get_ctx()
-    n_grid = len(grid_sizes)
-    n_block = len(block_sizes)
+def make_context(ctx, prefix, sizes):
+    n = len(sizes)
 
-    space = isl.Space.set_alloc(ctx, n_grid + n_block, 0)
+    space = isl.Space.set_alloc(ctx, n, 0)
 
-    for i in xrange(n_grid):
-        space = space.set_dim_name(isl.dim_type.param, i, "b"+str(i))
-
-    for i in xrange(n_block):
-        space = space.set_dim_name(isl.dim_type.param, n_grid+i, "t"+str(i))
+    for i in xrange(n):
+        space = space.set_dim_name(isl.dim_type.param, i, prefix+str(i))
 
     bs = isl.BasicSet.universe(space)
 
-    for i in xrange(n_grid):
+    for i in xrange(n):
         bs = bs.add_constraint(
             isl.Constraint.alloc_inequality(space)
             .set_coefficient_val(
                 isl.dim_type.param, i,  isl.Val.int_from_si(ctx, -1)
             )
             .set_constant_val(
-                isl.Val.int_from_si(ctx, grid_sizes[i] - 1)
+                isl.Val.int_from_si(ctx, sizes[i] - 1)
             )
         ).add_constraint(
             isl.Constraint.alloc_inequality(space)
@@ -91,33 +105,47 @@ def insert_context(node, grid_sizes, block_sizes):
             )
         )
 
-    for i in xrange(n_block):
-        bs = bs.add_constraint(
-            isl.Constraint.alloc_inequality(space)
-            .set_coefficient_val(
-                isl.dim_type.param, n_grid+i,  isl.Val.int_from_si(ctx, -1)
-            )
-            .set_constant_val(
-                isl.Val.int_from_si(ctx, block_sizes[i] - 1)
-            )
-        ).add_constraint(
-            isl.Constraint.alloc_inequality(space)
-            .set_coefficient_val(
-                isl.dim_type.param, n_grid+i,  isl.Val.int_from_si(ctx, 1)
-            )
-        )
+    return isl.Set.from_basic_set(bs)
 
-    return node.insert_context(isl.Set.from_basic_set(bs))
+def insert_context(node, grid_sizes, block_sizes):
+    ctx = node.get_ctx()
+
+    c1 = make_context(ctx, "b", grid_sizes)
+    c2 = make_context(ctx, "t", block_sizes)
+    return node.insert_context(c2.intersect(c1))
+
+
+def construct_band_tiles_sizes(node, tile_size):
+    space = node.band_get_space()
+    return list_to_multival(space, tile_size)
 
 
 def set_schedule_modulo(node, prefix, sizes):
-    mv = list_to_multival(node.band_get_space(), sizes)
+    n = len(sizes)
+    if n == 0:
+        return node.get_universe_domain()
 
+    n_zero = n - node.band_n_member()
     mupa = node.band_get_partial_schedule()
+    mv = construct_band_tiles_sizes(node, sizes[n_zero:])
     mupa = mupa.mod_multi_val(mv)
-    umap = isl.UnionMap.from_multi_union_pw_aff(mupa).reverse()
 
-    return parameter_vector(node.get_ctx(), prefix, len(sizes)).apply(umap)
+    space = mupa.get_space()
+    space = space.params()
+    space = isl.Space.set_from_params(space)
+    space = space.add_dims(isl.dim_type.set, n_zero)
+    ma = isl.MultiAff.zero(space)
+
+    domain = node.get_universe_domain()
+    mupa2 = isl.MultiUnionPwAff.multi_aff_on_domain(domain, ma)
+    mupa = mupa2.range_product(mupa)
+
+    space = mupa.get_space()
+    ma = parameter_vector(space, prefix, n)
+
+    mupa2 = isl.MultiUnionPwAff.multi_aff_on_domain(domain, ma)
+    mupa = mupa.sub(mupa2)
+    return mupa.zero_union_set()
 
 
 def scale_band(node, sizes):
@@ -126,197 +154,140 @@ def scale_band(node, sizes):
     return node
 
 
-def is_marked(node, name):
-    if node.get_type() != isl.schedule_node_type.mark:
-        return False
+def create_local_arrays(ctx, domain):
+    arrays = {} # {name: [access]} access: ("init", Stmt->Var)
 
-    mark = node.mark_get_id()
-    return mark.get_name() == name
+    for s in to_sets(domain):
+        name = s.get_tuple_name()
 
+        if name in ctx.init_stmts:
+            stmt = ctx.init_stmts[name]
+            access = stmt[0].intersect_domain(s)
+            v = access.get_tuple_name(isl.dim_type.out)
+            arrays[v] = arrays.get(v, ()) + (("init", access, stmt[0]),)
+        elif name in ctx.fini_stmts:
+            stmt = ctx.fini_stmts[name]
+            access = stmt[0].intersect_domain(s)
+            v = access.get_tuple_name(isl.dim_type.out)
+            arrays[v] = arrays.get(v, ()) + (("fini", access, stmt[0]),)
+        elif name in ctx.update_stmts:
+            stmt = ctx.update_stmts[name]
+            access = stmt[0].intersect_domain(s)
+            v = access.get_tuple_name(isl.dim_type.out)
+            arrays[v] = arrays.get(v, ()) + (("update", access, stmt[0]),)
 
-def node_is_core(node, core):
-    filter = node.filter_get_filter()
-    return not filter.is_disjoint(core)
+            for u in get_uses(stmt[1]):
+                access = u.intersect_domain(s)
+                v = access.get_tuple_name(isl.dim_type.out)
+                arrays[v] = arrays.get(v, ()) + (("use", access, u),)
 
+        elif name in ctx.def_stmts:
+            stmt = ctx.def_stmts[name]
+            access = stmt[0].intersect_domain(s)
+            v = access.get_tuple_name(isl.dim_type.out)
+            arrays[v] = arrays.get(v, ()) + (("def", access, stmt[0]),)
 
-def core_child(node, core):
-    if node.get_type() != isl.schedule_node_type.sequence:
-        return node.child(0)
+            for u in get_uses(stmt[1]):
+                access = u.intersect_domain(s)
+                v = access.get_tuple_name(isl.dim_type.out)
+                arrays[v] = arrays.get(v, ()) + (("use", access, u),)
 
-    n = node.n_children()
-    for i in xrange(n):
-        node = node.child(i)
-        if node_is_core(node, core):
-            return node.child(0)
-        nod = node.parent()
+    return arrays
 
-    assert False
-
-
-def gpu_tree_move_down_to(node, core, mark):
-    while not is_marked(node, mark):
-        node = core_child(node, core)
-
-    return node
-
-
-def gpu_tree_move_up_to(node, mark):
-    while not is_marked(node, mark):
-        node = node.parent()
-    return node
-
-def lower_bounds(set):
-    n = set.dim(isl.dim_type.set)
-    ls = isl.LocalSpace.from_space(set.get_space())
-    return [
-        set.min_val(
-            isl.Aff.var_on_domain(ls, isl.dim_type.set, i))
-        .get_num_si()
-        for i in xrange(n)]
-
-def upper_bounds(set):
-    n = set.dim(isl.dim_type.set)
-    ls = isl.LocalSpace.from_space(set.get_space())
-    return [
-        set.max_val(
-            isl.Aff.var_on_domain(ls, isl.dim_type.set, i))
-        .get_num_si() + 1
-        for i in xrange(n)]
+def create_from_access(group, read):
+    space = group.access.get_space().wrap().map_from_set()
+    name = group.tiling.get_tuple_name(isl.dim_type.out)
+    id = isl.Id.alloc(space.get_ctx(), ("read_" if read else "write_") + name, None)
+    space = space.set_tuple_id(isl.dim_type.in_, id)
+    return isl.MultiAff.identity(space)
 
 
-def schedule_copy_private(domain):
-    space = domain.get_space().reset_tuple_id(isl.dim_type.set)
-    mupa = isl.MultiUnionPwAff.from_union_map(domain.identity().reset_tuple_id(isl.dim_type.out))
 
-    mv = list_to_multival(space, lower_bounds(domain))
-    mupa2 = isl.MultiUnionPwAff.multi_val_on_domain(domain, mv)
-    mupa = mupa.sub(mupa2)
+def add_copies_group(node, group, block_sizes, core, sync_counter, read):
+    kernel_depth = node.get_schedule_depth()
+    depth = group.access.dim(isl.dim_type.in_)
 
-    strides = detect_strides(domain.affine_hull())
-    mv = list_to_multival(space, strides)
+    node = gpu_tree_move_down_to_depth(node, depth, core)
 
-    node = isl.ScheduleNode.from_domain(domain)
-    node = node.child(0)
-    node = node.insert_partial_schedule(mupa)
-    node = node.band_scale_down(mv)
+    from_access = create_from_access(group, read)
+    ma = group.tiling.pullback_multi_aff(from_access)
+    mpa = isl.MultiPwAff.from_multi_aff(ma)
+    mupa = isl.MultiUnionPwAff.from_multi_pw_aff(mpa)
 
-    m = isl.Map.from_union_map(node.band_get_partial_schedule_union_map())
-    return m
+    domain = group.access.wrap()
+    # if read:
+    #     domain = group_tile(group).wrap()
 
 
-def map_to_scalar(ctx, sizes, param=False):
-    n = len(sizes)
-    if param:
-        space = isl.Space.alloc(ctx, n, 1, 1)
+    domain = domain.preimage_multi_aff(from_access)
+    access = domain.wrapped_domain_map().reverse().coalesce()
+
+    graft = isl.ScheduleNode.from_extension(access)
+
+    graft = graft.child(0)
+    graft = graft.insert_partial_schedule(mupa)
+
+    filter = set_schedule_modulo(graft, "t", block_sizes)
+    graft = graft.insert_filter(filter)
+
+    while graft.has_parent():
+        graft = graft.parent()
+
+    if read:
+        if kernel_depth < depth:
+            node = gpu_tree_ensure_sync_after_core(node, core, sync_counter)
+
+        node = gpu_tree_move_left_to_sync(node, core, sync_counter)
+        node = node.graft_before(graft)
     else:
-        space = isl.Space.alloc(ctx, 0, n, 1)
-    map = isl.Map.universe(space)
+        node = gpu_tree_move_right_to_sync(node, core, sync_counter)
+        node = node.graft_after(graft)
 
-    t = isl.dim_type.param if param else isl.dim_type.in_
-
-    for i in xrange(n):
-        map = map.add_constraint(
-            isl.Constraint.alloc_inequality(space)
-            .set_coefficient_val(
-                t, i,  isl.Val.int_from_si(ctx, -1)
-            )
-            .set_constant_val(
-                isl.Val.int_from_si(ctx, sizes[i] - 1)
-            )
-        ).add_constraint(
-            isl.Constraint.alloc_inequality(space)
-            .set_coefficient_val(
-                t, i,  isl.Val.int_from_si(ctx, 1)
-            )
-        )
-
-    if param:
-        map = map.add_constraint(
-            isl.Constraint.alloc_inequality(space)
-            .set_coefficient_val(
-                isl.dim_type.in_, 0,  isl.Val.int_from_si(ctx, 1)
-            )
-        )
-
-    c = isl.Constraint.alloc_equality(map.space)
-
-    for i in xrange(n):
-        c = c.set_coefficient_val(
-            t, i,
-            isl.Val.int_from_si(ctx, product(sizes[1+i:]))
-        )
-    c = c.set_coefficient_val(
-        isl.dim_type.out, 0, isl.Val.int_from_si(ctx, -1))
-
-    if param:
-        c = c.set_coefficient_val(
-            isl.dim_type.in_, 0,
-            isl.Val.int_from_si(ctx, product(sizes))
-        )
-
-    map = map.add_constraint(c)
-
-    if param:
-        map = map.insert_dims(isl.dim_type.in_, 0, n)
-        space = map.get_space()
-
-        for i in xrange(n):
-            map = map.add_constraint(
-                isl.Constraint.alloc_equality(space)
-                .set_coefficient_val(
-                    isl.dim_type.param, i,  isl.Val.int_from_si(ctx, -1)
-                )
-                .set_coefficient_val(
-                    isl.dim_type.in_, i,  isl.Val.int_from_si(ctx, 1)
-                )
-            )
-
-    return map
+        # if kernel_depth < depth:
+        #     node = add_group_write_sync(group)
 
 
-def schedule_copy_local(domain, block_sizes):
-    m = schedule_copy_private(domain)
+    node = gpu_tree_move_up_to(node, "kernel")
+    return node
 
-    m1 = map_to_scalar(domain.get_ctx(), upper_bounds(m.range()))
-    m2 = map_to_scalar(domain.get_ctx(), block_sizes, True)
 
-    for i in xrange(len(block_sizes)):
-        m2 = m2.set_dim_name(isl.dim_type.param, i, "t"+str(i))
 
-    m = m.apply_range(m1)
+def add_copies(node, all_groups, block_sizes, core, sync_counter):
+    for v, groups in all_groups.iteritems():
+        for group in groups:
+            if group.has_read():
+                node = add_copies_group(node, group, block_sizes, core, sync_counter, read=True)
+            if group.has_write():
+                node = add_copies_group(node, group, block_sizes, core, sync_counter, read=False)
 
-    copy_schedule = m.apply_range(m2.reverse())
-    storage_map = m.apply_range(m2.remove_dims(isl.dim_type.param, 0, 2).reverse())
+    return node
 
-    return copy_schedule, storage_map.set_tuple_name(isl.dim_type.out, "local_"+domain.get_tuple_name())
 
+def group_statements(node, id):
+    return node.group(id)
 
 
 def create_kernel(ctx, node, grid_sizes, block_sizes):
     domain = node.get_domain()
-
-    init_map = ctx.init_stmts.get_assign_map().intersect_domain(domain)
-    update_map = ctx.update_stmts.get_assign_map().intersect_domain(domain)
-    fini_map  = ctx.fini_stmts.get_assign_map().intersect_domain(domain)
-    def_map = ctx.def_stmts.get_assign_map().intersect_domain(domain)
-    use_map = ctx.get_use_map().intersect_domain(domain)
-    assign_map = init_map.union(update_map).union(fini_map).union(def_map)
-
-    writes = assign_map.range()
-    reads = use_map.range().union(update_map.range().union(fini_map.range()).subtract(init_map.range()))
-
-    accesses = writes.union(reads)
-    access_map = assign_map.union(use_map)
-
+    arrays = create_local_arrays(ctx, domain)
 
     core = domain.universe()
+
+    contraction = node.get_subtree_contraction()
 
     node = node.insert_mark(isl.Id.alloc(node.get_ctx(), "kernel", None))
     node = node.child(0)
     node = node.child(0)
 
+    # node = node.insert_mark(isl.Id.alloc(node.get_ctx(), "shared", None))
+    # node = node.child(0)
+
     node = node.insert_mark(isl.Id.alloc(node.get_ctx(), "thread", None))
-    node = node.parent()
+
+
+    node = gpu_tree_move_up_to(node, "kernel")
+
+    node = node.child(0)
 
     assert n_outer_coincidence(node) >= len(grid_sizes)
 
@@ -327,6 +298,7 @@ def create_kernel(ctx, node, grid_sizes, block_sizes):
     grid_sizes = extract_sizes(block_filter.intersect(node.get_domain()).params())
 
     node = scale_band(node, grid_sizes)
+    node = node.parent()
 
     node = gpu_tree_move_down_to(node, core, "thread")
     node = node.child(0)
@@ -341,65 +313,46 @@ def create_kernel(ctx, node, grid_sizes, block_sizes):
 
     node = gpu_tree_move_up_to(node, "kernel")
     node = node.child(0)
-    node = node.child(0)
 
-    privates = [
-        m.get_tuple_name(isl.dim_type.in_)
-        for m in to_maps(access_map.apply_domain(node.get_prefix_schedule_union_map()).reverse())
-        if m.is_single_valued() ]
 
-    node = node.parent()
     node = insert_context(node, grid_sizes, block_sizes)
     node = node.child(0)
 
     node = node.insert_filter(block_filter)
+
+    node = gpu_tree_move_up_to(node, "kernel")
+
+    groups = gpu_group_references(arrays, node, core, contraction)
+
     node = node.child(0)
 
-    local_arrays = {
-        s.get_tuple_name(): schedule_copy_local(s, block_sizes)
-        for s in to_sets(access_map.apply_domain(
-                node.get_prefix_schedule_union_map()).range())
-        if s.get_tuple_name() not in privates}
+    context = make_context(node.get_ctx(), "b", grid_sizes)
 
-    local_array_shapes = {k: upper_bounds(m.range()) for k,(m,_) in local_arrays.iteritems() }
+
+    node = gpu_tree_move_down_to(node, core, "thread")
+    node = node.child(0)
+    node = node.insert_filter(thread_filter)
+
+
+    node = gpu_tree_move_up_to(node, "kernel")
+
+    sync_counter = Counter("sync%d")
+
+    node = add_copies(node, groups, block_sizes, core, sync_counter)
 
     node = gpu_tree_move_down_to(node, core, "thread")
     node = node.delete()
-    node = node.insert_filter(thread_filter)
-    node = node.child(0)
-
-    private_arrays = {
-        s.get_tuple_name(): schedule_copy_private(s)
-        for s in to_sets(access_map.apply_domain(
-                node.get_prefix_schedule_union_map()).range())
-        if s.get_tuple_name() in privates}
-    private_array_shapes = {k: upper_bounds(m.range()) for k,m in private_arrays.iteritems() }
-    private_arrays = {
-        k: (m,m.set_tuple_name(isl.dim_type.out, "private_"+k))
-        for k,m in private_arrays.iteritems()}
-
-    node = gpu_tree_move_up_to(node, "kernel")
-    node = node.child(0)
-    node = node.child(0)
-    node = node.child(0)
-    node = node.child(0)
 
     node = gpu_tree_move_up_to(node, "kernel")
     node = node.delete()
+
     node = node.insert_mark(node.parent().mark_get_id())
 
     info = KernelInfo(
         domain=domain,
         grid_sizes=grid_sizes,
         block_sizes=block_sizes,
-        reads = list({ s.get_tuple_name() for s in to_sets(reads) }),
-        writes = list({ s.get_tuple_name() for s in to_sets(writes) }),
-        arrays = list({ s.get_tuple_name() for s in to_sets(accesses) }),
-        privates = privates,
-        local_arrays = local_arrays,
-        local_array_shapes = local_array_shapes,
-        private_arrays = private_arrays,
-        private_array_shapes = private_array_shapes)
+        groups = groups)
 
     return node, info
 
@@ -446,6 +399,7 @@ def create_kernels(ctx, kernels, node, sizes):
 
 def map_to_device(ctx, schedule, sizes):
     node = schedule.get_root()
+
     kernels = {}
     node = create_kernels(ctx, kernels, node, sizes)
     return node.get_schedule(), kernels

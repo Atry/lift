@@ -72,6 +72,7 @@ INT_FUN_TYPE = {
     '%': 'infix',
     'max': 'fun2',
     'min': 'fun2',
+    'select': 'select'
 }
 
 INT_FUN_FMT = {
@@ -80,6 +81,7 @@ INT_FUN_FMT = {
 
 def format_int_call(fun, args):
     t = INT_FUN_TYPE[fun]
+
     if t == 'infix':
         return "({} {} {})".format(format_int_expr(args[0]), INT_FUN_FMT.get(fun,fun), format_int_expr(args[1]))
     elif t == 'prefix':
@@ -88,6 +90,8 @@ def format_int_call(fun, args):
         return "({}({}))".format(INT_FUN_FMT.get(fun,fun), format_int_expr(args[0]))
     elif t == 'fun2':
         return "({}({},{}))".format(INT_FUN_FMT.get(fun,fun), format_int_expr(args[0]), format_int_expr(args[1]))
+    elif t == 'select':
+        return "(({})?({}):({}))".format(format_int_expr(args[0]), format_int_expr(args[1]), format_int_expr(args[2]))
 
     raise NotImplementedError
 
@@ -165,14 +169,7 @@ def format_ast(table, ast, format_kernel=None):
             else_ = format_ast(table, ast[3], format_kernel))
     elif ast[0] == 'assign':
         assert ast[1][0] == 'element'
-        name = ast[1][1]
-        if name.startswith("local_"):
-            name = name[6:]
-        elif name.startswith("private_"):
-            name = name[8:]
-
-        shape = table.vars[name].shape
-        if len(shape) == 0:
+        if len(ast[1][2]) == 0:
             assert len(ast[1][2]) == 0
             return "{} = {};\n".format(
                 ast[1][1],
@@ -183,14 +180,7 @@ def format_ast(table, ast, format_kernel=None):
     elif ast[0] == 'call':
         return format_call(table, ast[1], ast[2])
     elif ast[0] == 'element':
-        name = ast[1]
-        if name.startswith("local_"):
-            name = name[6:]
-        elif name.startswith("private_"):
-            name = name[8:]
-
-        shape = table.vars[name].shape
-        if len(shape) == 0:
+        if len(ast[2]) == 0:
             assert len(ast[2]) == 0
             return "({}[0])".format(ast[1])
         else:
@@ -202,6 +192,8 @@ def format_ast(table, ast, format_kernel=None):
     elif ast[0] == 'kernel':
         assert format_kernel is not None
         return format_kernel(ast[1])
+    elif ast[0] == 'sync':
+        return "barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);\n"
     else:
         raise NotImplementedError
 

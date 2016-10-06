@@ -7,11 +7,7 @@ void
 kernel{id}(
 {arguments}){{
 {local_arrays}{private_arrays}{iterators}
-{copy_ins}
-barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 {body}
-{copy_outs}
-barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 }}
 """
 
@@ -28,12 +24,13 @@ def format_kernel_arguments(table, kernel):
         yield "__global float %s%s"%(v, "".join("[%d]"%(s,) for s in table.vars[v].shape[::-1]))
 
 def format_kernel_local_arrays(kernel):
-    for v, shape in kernel.local_array_shapes.iteritems():
-        yield "__local float local_%s%s;\n"%(v, "".join("[%d]"%(s,) for s in shape))
+    for v, groups in kernel.groups.iteritems():
+        for i, group in enumerate(groups):
+            yield "__local float shared_%s_%d%s;\n"%(v, i, "".join("[%d]"%(bound.size.get_num_si(),) for bound in group.bounds))
+
 
 def format_kernel_private_arrays(kernel):
-    for v, shape in kernel.private_array_shapes.iteritems():
-        yield "float private_%s%s;\n"%(v, "".join("[%d]"%(s,) for s in shape))
+    pass
 
 
 def format_kernels(table, kernels):
@@ -43,9 +40,7 @@ def format_kernels(table, kernels):
             arguments = ",\n".join(format_kernel_arguments(table, kernel)),
             iterators = "".join(format_kernel_iterators(kernel)),
             local_arrays = "".join(format_kernel_local_arrays(kernel)),
-            private_arrays = "".join(format_kernel_private_arrays(kernel)),
-            copy_ins = format_ast(table, kernel.local_copy_ins),
-            copy_outs = format_ast(table, kernel.local_copy_outs),
+            private_arrays = "",
             body = format_ast(table, kernel.ast)
         )
 
