@@ -108,6 +108,10 @@ Compile Options
 \--emit {schedule,c,opencl}
     choose schedule to save schedule
 
+    OpenCL backend is ported from `ppcg`__ .
+
+.. __: http://ppcg.gforge.inria.fr/
+
 \--sizes SIZES
     see 'Specifying tile, grid and block sizes' section in `README of ppcg`__ .
 
@@ -356,3 +360,104 @@ x <. y
 
 x >. y
     max
+
+reduce
+    1-dimension reduce
+
+    .. code::
+
+          A
+       1 2 3
+
+          (reduce 1 +) A
+       6
+
+    2-dimension reduce
+
+    .. code::
+
+          B
+       1 2
+       3 4
+
+          (reduce 2 +) B
+       10
+
+oblique
+    oblique in LiFT goes in a different direction than in J.
+
+    .. code::
+
+          A
+       0 1 2
+       4 5 6
+       7 8 9
+          (oblique 1 +) A
+       7 12 14 7 2
+          (oblique 1 >.) A
+       7 8 9 6 2
+          (oblique 1 <.) A
+       7 4 0 1 2
+
+
+duplicate
+    duplicate
+
+    .. code::
+
+          (duplicate 2) 1
+       1 1
+
+          (duplicate 2 2) 1
+       1 1
+       1 1
+
+trim
+    trim
+
+    .. code::
+
+          A
+       1 2 1
+          (trim 1) A
+       2
+
+          B
+       1 1 2 1 1
+          (trim 2) B
+       2
+
+          C
+       1 1 1
+       1 2 1
+       1 1 1
+          (trim 1 1) C
+       2
+
+stride
+    stride
+
+    .. code::
+
+          A
+       1 2 1
+          (stride 2) A
+       1 1
+
+          B
+       1 2 1 2 1
+          (stride 2) B
+       1 1 1
+
+          C
+       1 2 2 1
+          (stride 3) C
+       1 1
+
+          D
+       1 2 1
+       2 2 2
+       1 2 1
+          (stride 2 2) D
+       1 1
+       1 1
