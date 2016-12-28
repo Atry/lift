@@ -5,6 +5,24 @@ Pool :: (out 10 10)
 
 relu"0 := (0.0 >. y)
 
-Conv := ((((trim 4 4)"2) (((oblique 2 +)"4) (K ((*"2 0)"2 2) Input))) + B)
+Conv := (
+  (
+    (
+      (trim 4 4)"2
+    )
+    (
+      (
+        (oblique 2 +)"4
+      )
+      (
+        K
+        ((*"2 0)"2 2)
+        Input
+      )
+    )
+  )
+  +
+  B
+)
 Relu := (relu Conv)
 Pool := (((stride 2 2)"2) (((trim 1 1)"2) (((oblique 2 >.)"4) (((duplicate 2 2)"0) Relu))))
